@@ -75,7 +75,7 @@ class EnrichStore:
         if RMSP_PATH.exists():
             # строки в формате Arrow: в разы компактнее объектов Python; полное название не грузим
             cols = ["inn", "name", "full_name", "ogrn", "region_code", "city", "okved_main", "okved_main_name", "okved_extra",
-                    "msp_category", "employees", "products", "in_dataset"]
+                    "msp_category", "employees", "products", "msp_since", "in_dataset"]
             self.rmsp = pd.read_parquet(RMSP_PATH, columns=cols, dtype_backend="pyarrow").set_index("inn")
             self.rmsp["in_dataset"] = self.rmsp["in_dataset"].astype(bool)
         con = duckdb.connect(str(DB_PATH), read_only=True)
@@ -146,7 +146,6 @@ class EnrichStore:
         card["rnp"] = rec
         if rec is None:
             return
-        card.setdefault("enrich_sources", []).append("РНП (ЕИС)")
         if rec["in_rnp"]:
             since = next((r["included"] for r in rec["records"] if r["active"] and r["included"]), None)
             card.setdefault("reasons", []).insert(
@@ -281,6 +280,7 @@ class EnrichStore:
                     why[inn].append(reason.format(ok=r.get("okved_main") or ok))
         if plans:
             return self._new_from_pool(plans, exclude, limit)
+        match = dict(scores)  # сила совпадения вида деятельности до поправок на размер и регион
         for inn, r in recs.items():
             emp = r.get("employees") or 0
             scores[inn] += 0.25 * math.log1p(emp)
@@ -297,7 +297,7 @@ class EnrichStore:
             per_okved[ok] += 1
             if len(top) >= limit:
                 break
-        return self._new_cards(top, scores, recs, why)
+        return self._new_cards(top, recs, why, match)
 
     def _new_from_pool(self, plans: list[tuple[str, float, str]], exclude: set[str], limit: int) -> list[dict]:
         """Офлайн-подбор по выгрузке реестра МСП: векторный скоринг по индексу ОКВЭД."""
@@ -322,39 +322,61 @@ class EnrichStore:
             per_okved[ok] += 1
             if len(top) >= limit:
                 break
-        scores, recs, why = {}, {}, {}
+        recs, why, match = {}, {}, {}
         for p in top:
             inn = self.pool_inns[p]
-            scores[inn] = float(sc[p])
             recs[inn] = _row(self.pool.iloc[p], inn)
-            why[inn] = []
-            for ok, _, reason in plans:
+            why[inn], match[inn] = [], 0.0
+            for ok, w, reason in plans:
                 if p in set(self.pool_main.get(ok, [])):
-                    why[inn].append(reason.format(ok=ok) + " — основной вид деятельности")
+                    why[inn].append(reason.format(ok=ok) + " — это основной вид деятельности компании")
+                    match[inn] = max(match[inn], w)
                 elif p in set(self.pool_extra.get(ok, [])):
-                    why[inn].append(reason.format(ok=ok) + " — дополнительный вид деятельности")
-        return self._new_cards([self.pool_inns[p] for p in top], scores, recs, why)
+                    why[inn].append(reason.format(ok=ok) + " — это дополнительный вид деятельности компании")
+                    match[inn] = max(match[inn], 0.4 * w)
+        return self._new_cards([self.pool_inns[p] for p in top], recs, why, match)
 
-    def _new_cards(self, top: list[str], scores: dict, recs: dict, why: dict) -> list[dict]:
-        best = max((scores[i] for i in top), default=1)
+    def _new_cards(self, top: list[str], recs: dict, why: dict, match: dict) -> list[dict]:
+        """Балл новой компании — абсолютный (максимум 80: без истории закупок 100 не бывает) и с разбивкой:
+        совпадение вида деятельности с закупкой (до 50), размер (до 15), стаж в реестре МСП (до 5),
+        регион (до 5), наличие контактов (до 5)."""
         contacts = rmsp_api.get_many(top, live=True)
         rnp = rnp_mod.get_many(top, live=True)
         out = []
         for inn in top:
             r = recs[inn] | {k: contacts[inn][k] for k in ("phone", "email") if inn in contacts and contacts[inn].get(k)}
-            card = {"inn": inn, "source": "external", "status": "new",
-                    "status_reason": "нет в истории закупок 2024–2025, найден в реестре МСП по профилю деятельности",
-                    "score": round(max(scores[inn], 0) / best * 60, 1),
-                    "reasons": list(dict.fromkeys(why[inn]))[:3], "evidence": [], "stats": None, "factors": {}}
-            card.update(self._company(inn, r, None))
-            extra = [REGION_NAMES.get(r.get("region_code"), "")]
+            emp = int(r["employees"]) if r.get("employees") else 0
+            year = int(str(r["msp_since"])[-4:]) if str(r.get("msp_since") or "")[-4:].isdigit() else None
+            points = [
+                ["Вид деятельности совпадает с закупкой", round(min(25 * match.get(inn, 0), 50), 1)],
+                ["Размер компании", round(15 * min(math.log1p(emp) / math.log1p(100), 1), 1)],
+                ["Стаж в реестре МСП", 5.0 if year and year <= 2023 else 2.0 if year else 0.0],
+                ["Санкт-Петербург / ЛО", 5.0 if r.get("region_code") == SPB_REGION else 3.0],
+                ["Есть контакты в реестре", 5.0 if (r.get("phone") or r.get("email")) else 0.0],
+            ]
+            company = self._company(inn, r, None)
+            okved = company.get("okved") or {}
+            reasons = list(dict.fromkeys(why[inn]))[:2]
+            if okved.get("code"):
+                reasons.insert(0, f"Основной вид деятельности: {okved['code']} {okved.get('name') or ''}".strip())
+            size = [REGION_NAMES.get(r.get("region_code"), "")]
             if r.get("msp_category"):
-                extra.append(f"{r['msp_category']} предприятие")
-            if r.get("employees"):
-                extra.append(f"{int(r['employees'])} сотрудников")
-            card["reasons"].append(", ".join(x for x in extra if x))
+                size.append(f"{r['msp_category']} предприятие")
+            size.append(f"{emp} сотрудников" if emp else "численность не указана")
+            if year:
+                size.append(f"в реестре МСП с {year} года")
+            reasons.append(", ".join(x for x in size if x))
+            card = {"inn": inn, "source": "external", "status": "new",
+                    "status_reason": ("в закупках АИС ГЗ и ЭМ за 2024–2025 не участвовал; подобран по виду деятельности "
+                                      f"{okved.get('code', '')} из реестра МСП"),
+                    "score": round(sum(v for _, v in points), 1), "points": [x for x in points if x[1] > 0],
+                    "reasons": reasons, "evidence": [], "stats": None, "factors": {}}
+            card.update(company)
             self._apply_rnp(card, rnp.get(inn))
+            if (card.get("rnp") or {}).get("in_rnp"):
+                card["score"] = round(card["score"] * 0.5, 1)
             out.append(card)
+        out.sort(key=lambda c: -c["score"])
         return out
 
 

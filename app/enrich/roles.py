@@ -9,7 +9,7 @@ import re
 
 ROLE_LABELS = {
     "manufacturer": "Производитель",
-    "distributor": "Дистрибьютор",
+    "distributor": "Дистрибьютор (оптовая торговля)",
     "supplier": "Поставщик (торговля)",
     "contractor": "Подрядчик",
     "service": "Исполнитель услуг",
@@ -108,11 +108,26 @@ def classify(okved_main: str | None, okved_main_name: str | None = None, okved_e
 
     total = sum(score.values())
     if total == 0:
-        return {"role": None, "role_label": "Не определена", "confidence": 0.0, "role_reasons": []}
-    best = max(score, key=score.get)
+        return {"role": None, "role_label": "Не определена", "confidence": 0.0, "confidence_label": "",
+                "role_reasons": [], "role_alt": None}
+    ranked = sorted(score, key=score.get, reverse=True)
+    best, second = ranked[0], ranked[1]
+    share = score[best] / total
+    # число независимых признаков «за» роль: ОКВЭД, доп. ОКВЭД, продукция, название, профиль закупок
+    n_signals = len(reasons[best])
+    level = "высокая" if share >= 0.8 and n_signals >= 2 else "средняя" if share >= 0.55 else "низкая"
+    out_reasons = list(reasons[best])
+    if best == "distributor":
+        out_reasons.append("роль определена по виду деятельности; партнёрство с производителями не проверялось")
+    alt = None
+    if score[second] >= 0.3 * score[best] and reasons[second]:
+        alt = {"role": second, "role_label": ROLE_LABELS[second], "reasons": reasons[second]}
+        out_reasons.append(f"есть и признаки роли «{ROLE_LABELS[second]}»: {'; '.join(reasons[second])}")
     return {
         "role": best,
         "role_label": ROLE_LABELS[best],
-        "confidence": round(score[best] / total, 2),
-        "role_reasons": reasons[best],
+        "confidence": round(share, 2),
+        "confidence_label": level,   # показываем словами: доля баллов — не вероятность
+        "role_reasons": out_reasons,
+        "role_alt": alt,
     }

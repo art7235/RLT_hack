@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from typing import Literal
 
 import duckdb
@@ -91,22 +92,36 @@ def search_csv(q: str, platform: Literal["ЭМ", "АИС ГЗ"] | None = None, r
 
 
 @app.get("/api/supplier/{inn}")
-def supplier(inn: str) -> dict:
+def supplier(inn: str, okpd: str = "") -> dict:
+    """Карточка поставщика. okpd — коды ОКПД2 текущей закупки через запятую: опыт по ним показываем первым."""
     e = get_engine()
     card = {"inn": inn}
     get_store().enrich_cards([card])
+    prefixes = [c.strip()[:8] for c in okpd.split(",") if re.fullmatch(r"\d{2}(\.\d+)*", c.strip())][:5]
+    rel_sql = " OR ".join(f"s.okpd2_code LIKE '{p}%'" for p in prefixes) or "FALSE"
     con = duckdb.connect(str(DB_PATH), read_only=True)
-    card["okpd2"] = con.execute("""
-        SELECT s.okpd2_code AS code, n.sample_name AS name, s.n_lots, s.n_wins, CAST(s.last_date AS VARCHAR) AS last_date
+    rows = con.execute(f"""
+        SELECT s.okpd2_code AS code, n.sample_name AS name, s.n_lots, s.n_wins,
+               CAST(s.last_date AS VARCHAR) AS last_date, ({rel_sql}) AS relevant
         FROM supplier_okpd s LEFT JOIN okpd2_names n USING (okpd2_code)
-        WHERE s.inn = ? ORDER BY s.n_wins DESC, s.n_lots DESC LIMIT 15
+        WHERE s.inn = ? ORDER BY relevant DESC, s.n_wins DESC, s.n_lots DESC LIMIT 15
     """, [inn]).df().to_dict("records")
-    card["recent_lots"] = con.execute("""
-        SELECT l.lot_id, l.subject, CAST(l.publish_date AS VARCHAR) AS date, l.start_price AS price,
-               l.platform, p.is_winner, l.customer_inn
-        FROM participations p JOIN lots l USING (lot_id)
-        WHERE p.inn = ? ORDER BY l.publish_date DESC LIMIT 20
-    """, [inn]).df().to_dict("records")
+    for r in rows:
+        r["official_name"] = e.okpd_names.get(r["code"][:8], "")
+    card["okpd2"] = rows
+    lots_sql = """
+        SELECT DISTINCT l.lot_id, l.subject, CAST(l.publish_date AS VARCHAR) AS date, l.start_price AS price,
+               l.platform, p.is_winner, l.customer_inn,
+               (SELECT count(*) FROM participations x WHERE x.lot_id = l.lot_id) AS n_bidders
+        FROM participations p JOIN lots l USING (lot_id) {join}
+        WHERE p.inn = ? {where} ORDER BY date DESC LIMIT {limit}
+    """
+    card["relevant_lots"] = []
+    if prefixes:
+        item_rel = " OR ".join(f"i.okpd2_code LIKE '{p}%'" for p in prefixes)
+        card["relevant_lots"] = con.execute(lots_sql.format(
+            join="JOIN lot_items i USING (lot_id)", where=f"AND ({item_rel})", limit=10), [inn]).df().to_dict("records")
+    card["recent_lots"] = con.execute(lots_sql.format(join="", where="", limit=15), [inn]).df().to_dict("records")
     con.close()
     if inn in e.profile.index:
         p = e.profile.loc[inn]
