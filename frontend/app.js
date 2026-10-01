@@ -315,6 +315,18 @@ function initials(name) {
   return (clean[0] || "?").toUpperCase();
 }
 
+function checks(s) {
+  const out = [];
+  if (s.rnp) {
+    out.push(s.rnp.in_rnp ? `<span class="chk bad">Реестр недобросовестных: действующая запись</span>`
+      : s.rnp.was_in_rnp ? `<span class="chk warn">Реестр недобросовестных: был, исключён</span>`
+      : `<span class="chk ok">Реестр недобросовестных: записей нет</span>`);
+  }
+  if ((s.enrich_sources || []).length) out.push(`<span class="chk">Данные: ${esc(s.enrich_sources.join(", "))}</span>`);
+  if (s.confidence_label) out.push(`<span class="chk">Роль определена с уверенностью: ${esc(s.confidence_label)}</span>`);
+  return out.join("");
+}
+
 function card(s, rank, d) {
   const [stLabel, stCls] = STATUS[s.status] || [s.status, ""];
   const st = s.stats;
@@ -323,6 +335,8 @@ function card(s, rank, d) {
   const factors = Object.entries(s.factors || {}).filter(([k]) => d.weights[k]).map(([k, v]) => [k, v, v * d.weights[k] * 100])
     .sort((a, b) => b[2] - a[2]).map(([k, v, c]) => `<div class="factor"><span>${esc(d.factor_labels[k] || k)}</span>
       <div class="share"><span style="width:${Math.round(v * 100)}%"></span></div><b>+${c.toFixed(1)}</b></div>`).join("");
+  const points = (s.points || []).map(([label, v]) => `<div class="factor"><span>${esc(label)}</span>
+      <div class="share"><span style="width:${Math.round(Math.min(v / 50, 1) * 100)}%"></span></div><b>+${Number(v).toFixed(1)}</b></div>`).join("");
   const sub = [`ИНН ${esc(s.inn)}`];
   if (s.city) sub.push(esc(s.city));
   if (s.okved) sub.push(`ОКВЭД ${esc(s.okved.code)}${s.okved.name ? " · " + esc(s.okved.name) : ""}`);
@@ -341,8 +355,8 @@ function card(s, rank, d) {
   if (s.employees) extra.push(`${s.employees} сотр.`);
   const reasons = (s.reasons || []).map((r) => `<li${/^Внимание/.test(r) ? ' class="alert"' : ""}>${esc(r)}</li>`).join("");
   const evidence = (s.evidence || []).length ? `
-    <details class="evidence"><summary>Похожие закупки этого поставщика (${s.evidence.length})</summary>
-      ${s.evidence.map((e) => `<div class="lot"><div>${esc(e.subject)}</div>
+    <details class="evidence"><summary>Примеры похожих закупок этого поставщика (${s.evidence.length})</summary>
+      ${s.evidence.map((e) => `<div class="lot"><div>${e.same_customer ? '<span class="won">ваш заказчик · </span>' : ""}${esc(e.subject)}</div>
         <div class="meta">${fmtDate(e.date)} · ${esc(e.platform)} · ${fmtMoney(e.price)}
         ${e.is_winner ? ' · <span class="won">победа</span>' : " · участие"}</div></div>`).join("")}
     </details>` : "";
@@ -357,11 +371,11 @@ function card(s, rank, d) {
         <div class="badges">
           ${inRnp ? `<span class="badge b-bad" title="Действующая запись в реестре недобросовестных поставщиков (ЕИС)">В реестре недобросовестных</span>` : ""}
           <span class="badge ${stCls}" title="${esc(s.status_reason)}">${stLabel}</span>
-          <span class="badge" title="${esc(roleTitle)}">${esc(s.role_label || "Роль не определена")}${s.confidence ? ` · ${Math.round(s.confidence * 100)}%` : ""}</span>
+          <span class="badge" title="${esc(roleTitle)}">${esc(s.role_label || "Роль не определена")}</span>
           ${s.is_active === false ? `<span class="badge b-bad" title="Ликвидирован ${esc(s.liquidated || "")}">Ликвидирован</span>` : ""}
           ${extra.length ? `<span class="badge">${extra.join(", ")}</span>` : ""}
-          ${(s.enrich_sources || []).map((x) => `<span class="badge b-src" title="Источник данных">${esc(x)}</span>`).join("")}
         </div>
+        <div class="checks">${checks(s)}</div>
         ${contacts.length ? `<div class="contacts">${contacts.join("")}</div>` : ""}
       </div>
       <div class="score" title="Итоговый балл релевантности, 0–100">
@@ -377,7 +391,8 @@ function card(s, rank, d) {
         ${stats}
         ${evidence}
       </div>
-      ${factors ? `<div class="factors"><h4>Из чего сложился балл</h4>${factors}</div>` : ""}
+      ${factors || points ? `<div class="factors"><h4>Из чего сложился балл</h4>${factors || points}
+        ${points ? `<p class="note">У новых компаний балл не выше 80: истории закупок нет.</p>` : ""}</div>` : ""}
     </div>
   </article>`;
 }
@@ -387,11 +402,14 @@ async function openSupplier(inn) {
   $("#modal-body").innerHTML = `<div class="spinner"></div>`;
   $("#modal").classList.remove("hidden");
   try {
-    const s = await (await fetch("/api/supplier/" + inn)).json();
+    const codes = ((state.data || {}).okpd2 || []).map((o) => o.code).join(",");
+    const s = await (await fetch("/api/supplier/" + inn + (codes ? "?okpd=" + encodeURIComponent(codes) : ""))).json();
+    const lotRows = (lots) => lots.map((l) => `<tr><td>${fmtDate(l.date)}</td><td>${esc(l.subject)}</td><td>${esc(l.platform)}</td><td>${fmtMoney(l.price)}</td>
+      <td>${l.is_winner ? `<span class="won">победа</span>${l.n_bidders === 1 ? " (единственный участник)" : ""}` : "участие"}</td></tr>`).join("");
     const rnp = s.rnp ? (s.rnp.in_rnp ? "состоит в реестре" : s.rnp.was_in_rnp ? "был в реестре, исключён" : "записей нет") : null;
     const kv = [
       ["ИНН", s.inn], ["ОГРН", s.ogrn], ["Полное название", s.full_name !== s.name ? s.full_name : null],
-      ["Роль", s.role_label ? `${s.role_label} (${Math.round((s.confidence || 0) * 100)}%)` : null],
+      ["Роль", s.role_label ? `${s.role_label}${s.confidence_label ? " — уверенность " + s.confidence_label : ""}` : null],
       ["Основной ОКВЭД", s.okved ? `${s.okved.code} ${s.okved.name || ""}` : null],
       ["Город", s.city], ["Категория МСП", s.msp_category], ["Сотрудников", s.employees],
       ["Руководитель", s.head], ["Телефон", s.phone], ["Email", s.email],
@@ -405,10 +423,12 @@ async function openSupplier(inn) {
       <div class="kv">${kv.map(([k, v]) => `<div>${esc(k)}</div><div>${esc(v)}</div>`).join("")}</div>
       ${s.rnp && s.rnp.records.length ? `<h3>Записи в реестре недобросовестных поставщиков</h3><div class="table-scroll"><table><tr><th>№ записи</th><th>Закон</th><th>Включено</th><th>Исключено</th></tr>
         ${s.rnp.records.map((r) => `<tr><td>${esc(r.number)}</td><td>${esc(r.law || "")}</td><td>${esc(r.included || "")}</td><td>${esc(r.excluded || "действует")}</td></tr>`).join("")}</table></div>` : ""}
-      ${s.okpd2 && s.okpd2.length ? `<h3>Опыт по кодам ОКПД2</h3><div class="table-scroll"><table><tr><th>Код</th><th>Пример позиции</th><th>Закупок</th><th>Побед</th><th>Последняя</th></tr>
-        ${s.okpd2.map((o) => `<tr><td>${esc(o.code)}</td><td>${esc(o.name)}</td><td>${o.n_lots}</td><td>${o.n_wins}</td><td>${fmtDate(o.last_date)}</td></tr>`).join("")}</table></div>` : ""}
-      ${s.recent_lots && s.recent_lots.length ? `<h3>Последние закупки</h3><div class="table-scroll"><table><tr><th>Дата</th><th>Предмет</th><th>Площадка</th><th>НМЦ</th><th></th></tr>
-        ${s.recent_lots.map((l) => `<tr><td>${fmtDate(l.date)}</td><td>${esc(l.subject)}</td><td>${esc(l.platform)}</td><td>${fmtMoney(l.price)}</td><td>${l.is_winner ? '<span class="won">победа</span>' : ""}</td></tr>`).join("")}</table></div>` : ""}`;
+      ${s.relevant_lots && s.relevant_lots.length ? `<h3>Закупки по категории текущей закупки</h3><div class="table-scroll"><table><tr><th>Дата</th><th>Предмет</th><th>Площадка</th><th>НМЦ</th><th>Итог</th></tr>
+        ${lotRows(s.relevant_lots)}</table></div>` : ""}
+      ${s.okpd2 && s.okpd2.length ? `<h3>Опыт по кодам ОКПД2</h3><div class="table-scroll"><table><tr><th>Код</th><th>Название по классификатору</th><th>Закупок</th><th>Побед</th><th>Последняя</th></tr>
+        ${s.okpd2.map((o) => `<tr${o.relevant ? ' class="rel"' : ""}><td>${esc(o.code)}${o.relevant ? '<div class="won">эта закупка</div>' : ""}</td><td>${esc(o.official_name || o.name)}</td><td>${o.n_lots}</td><td>${o.n_wins}</td><td>${fmtDate(o.last_date)}</td></tr>`).join("")}</table></div>` : ""}
+      ${s.recent_lots && s.recent_lots.length ? `<h3>Последние закупки (все категории)</h3><div class="table-scroll"><table><tr><th>Дата</th><th>Предмет</th><th>Площадка</th><th>НМЦ</th><th>Итог</th></tr>
+        ${lotRows(s.recent_lots)}</table></div>` : ""}`;
   } catch (e) {
     $("#modal-body").innerHTML = `<span class="error-box">Не удалось загрузить карточку: ${esc(e.message)}</span>`;
   }
