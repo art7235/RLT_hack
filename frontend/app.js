@@ -345,9 +345,10 @@ function card(s, rank, d) {
   if (s.email) contacts.push(`<a href="mailto:${esc(s.email)}">✉ ${esc(s.email)}</a>`);
   const stats = st ? `<div class="stats">
       <span>Закупок <b>${st.n_lots}</b></span>
-      <span>Побед <b>${st.n_wins}</b> (${Math.round(st.win_rate * 100)}%)</span>
+      ${st.n_eshop ? `<span title="В Электронном магазине видны все участники, поэтому доля побед считается только по нему">ЭМ: побед <b>${st.n_eshop_wins ?? "—"}</b> из ${st.n_eshop}${st.n_eshop_wins != null ? ` (${Math.round(st.n_eshop_wins / st.n_eshop * 100)}%)` : ""}</span>` : ""}
+      ${st.n_aisgz ? `<span title="По АИС ГЗ в данных есть только победители процедур">АИС ГЗ: победитель в <b>${st.n_aisgz}</b></span>` : ""}
       <span>Заказчиков <b>${st.n_customers}</b></span>
-      <span>ЭМ / АИС ГЗ <b>${st.n_eshop} / ${st.n_aisgz}</b></span>
+
       <span>Последняя <b>${fmtDate(st.last_date)}</b></span>
     </div>` : "";
   const extra = [];
