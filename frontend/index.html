@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подбор поставщиков</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="/">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="34" height="34"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 21l5-5 3 3 6-7" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span>
+        <span class="brand-title">Подбор поставщиков</span>
+        <span class="brand-sub">АИС ГЗ · Электронный магазин Санкт-Петербурга</span>
+      </span>
+    </a>
+    <div class="health" id="health"></div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Кто сможет выполнить вашу закупку?</h1>
+    <p class="lead">Опишите закупку — получите рейтинг поставщиков с объяснением, почему подходит каждый, и новые компании, которые ещё не участвовали в торгах.</p>
+
+    <div class="modes" role="tablist" aria-label="Способ ввода">
+      <button type="button" class="mode active" data-mode="card" role="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 13h6 M10 17h6" /></svg>
+        Карточка закупки
+      </button>
+      <button type="button" class="mode" data-mode="file" role="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4 M7 9l5-5 5 5 M5 20h14" /></svg>
+        Загрузить файл
+      </button>
+      <button type="button" class="mode" data-mode="quick" role="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
+        Быстрый поиск
+      </button>
+    </div>
+
+    <!-- карточка закупки -->
+    <form id="card-form" class="panel-form" autocomplete="off">
+      <label class="fld">
+        <span class="fld-label">Наименование закупки</span>
+        <input id="c-text" placeholder="Например: Поставка бумаги для офисной техники">
+      </label>
+      <label class="fld">
+        <span class="fld-label">Позиции спецификации <em>по одной в строке; код ОКПД2 можно дописать через «;»</em></span>
+        <textarea id="c-items" rows="3" placeholder="Бумага для офисной техники А4; 17.12.14.129&#10;Бумага для офисной техники А3"></textarea>
+      </label>
+      <div class="extra">
+        <div class="extra-head">Дополнительно <em>чем больше заполнено, тем точнее подбор: с данными закупки победитель попадает в топ-10 в 53% случаев против 43% по одному названию</em></div>
+        <div class="extra-grid">
+          <label class="fld">
+            <span class="fld-label">НМЦ, ₽</span>
+            <input id="c-price" inputmode="decimal" placeholder="45 000">
+          </label>
+          <label class="fld">
+            <span class="fld-label">ИНН заказчика</span>
+            <input id="c-customer" inputmode="numeric" placeholder="7802141070">
+          </label>
+          <div class="fld">
+            <span class="fld-label">Площадка</span>
+            <div class="seg" role="radiogroup" aria-label="Площадка">
+              <label><input type="radio" name="c-platform" value="" checked><span>Не важно</span></label>
+              <label><input type="radio" name="c-platform" value="ЭМ"><span>ЭМ</span></label>
+              <label><input type="radio" name="c-platform" value="АИС ГЗ"><span>АИС ГЗ</span></label>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="c-smp"><span>Только для СМП</span></label>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Подобрать поставщиков</button>
+        <button type="button" class="btn btn-ghost" id="c-example">Заполнить пример</button>
+        <button type="button" class="btn btn-text" id="c-clear">Очистить</button>
+      </div>
+    </form>
+
+    <!-- файл -->
+    <form id="file-form" class="panel-form hidden" autocomplete="off">
+      <div class="file-grid">
+        <div class="file-steps">
+          <div class="step"><b>1</b><div><strong>Скачайте шаблон</strong><span>Одна строка — одна позиция. У позиций одной закупки общий номер.</span>
+            <div class="tpl"><a class="btn btn-ghost btn-sm" href="/api/template.xlsx">Excel</a><a class="btn btn-ghost btn-sm" href="/api/template.csv">CSV</a></div></div></div>
+          <div class="step"><b>2</b><div><strong>Заполните</strong><span>Обязательно название закупки или позиций. ОКПД2, НМЦ, ИНН заказчика, площадка, СМП — по возможности.</span></div></div>
+          <div class="step"><b>3</b><div><strong>Загрузите</strong><span>Получите рейтинг по каждой закупке и выгрузку в Excel. Подходят и выгрузки АИС ГЗ с их названиями колонок.</span></div></div>
+        </div>
+        <label class="drop" id="drop">
+          <input type="file" id="f-file" accept=".xlsx,.xlsm,.csv,.txt">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5 M7.5 9.5L12 5l4.5 4.5 M5 19h14" /></svg>
+          <strong id="drop-title">Перетащите файл сюда или нажмите</strong>
+          <span id="drop-sub">Excel или CSV, до 300 закупок</span>
+        </label>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Обработать файл</button>
+      </div>
+    </form>
+
+    <!-- быстрый поиск -->
+    <form id="form" class="panel-form hidden" autocomplete="off">
+      <div class="search-row">
+        <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
+        <input id="q" name="q" type="search" placeholder="Название закупки — можно с опечатками" required>
+        <button type="submit" class="btn btn-primary">Найти</button>
+      </div>
+      <div class="filters">
+        <div class="seg" role="radiogroup" aria-label="Площадка">
+          <label><input type="radio" name="platform" value="" checked><span>Все площадки</span></label>
+          <label><input type="radio" name="platform" value="ЭМ"><span>Электронный магазин</span></label>
+          <label><input type="radio" name="platform" value="АИС ГЗ"><span>АИС ГЗ</span></label>
+        </div>
+        <label class="check"><input type="checkbox" id="region_only"><span>Только СПб и Ленобласть</span></label>
+        <label class="check"><input type="checkbox" id="external" checked><span>Искать новые компании</span></label>
+      </div>
+      <div class="examples"><span class="examples-label">Попробуйте:</span><span id="examples"></span></div>
+    </form>
+  </div>
+</section>
+
+<main class="wrap" id="main">
+  <section id="state" class="state"></section>
+  <section id="batch" class="batch hidden"></section>
+
+  <div id="result" class="hidden">
+    <section id="kpis" class="kpis"></section>
+    <div class="layout">
+      <aside id="understanding" class="panel side"></aside>
+      <section class="results">
+        <div class="results-head">
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="dataset" role="tab">Из истории закупок <span id="cnt-dataset" class="pill"></span></button>
+            <button class="tab" data-tab="external" role="tab">Новые компании <span id="cnt-external" class="pill"></span></button>
+          </div>
+          <div class="results-actions">
+            <select id="role-filter" aria-label="Фильтр по роли">
+              <option value="">Все роли</option>
+              <option value="manufacturer">Производители</option>
+              <option value="distributor">Дистрибьюторы</option>
+              <option value="supplier">Поставщики (торговля)</option>
+              <option value="contractor">Подрядчики</option>
+              <option value="service">Исполнители услуг</option>
+            </select>
+            <a id="csv" class="btn btn-ghost btn-sm hidden" href="#">Скачать CSV</a>
+          </div>
+        </div>
+        <p id="tab-hint" class="tab-hint"></p>
+        <div id="list" class="list"></div>
+      </section>
+    </div>
+  </div>
+
+  <section id="about" class="about">
+    <h2>Как это работает</h2>
+    <div class="about-grid">
+      <div><i>1</i><b>Понимаем закупку</b><span>Исправляем опечатки, убираем шум («для нужд ГБОУ № 5»), определяем тип — товар, работа или услуга — и коды ОКПД2.</span></div>
+      <div><i>2</i><b>Ищем в истории</b><span>604 тыс. закупок АИС ГЗ и ЭМ: кто участвовал и побеждал в похожих, кто уже работал с этим заказчиком.</span></div>
+      <div><i>3</i><b>Проверяем по реестрам</b><span>Реестр МСП и ЕГРЮЛ ФНС, реестр недобросовестных поставщиков: название, контакты, роль на рынке, красные флаги.</span></div>
+      <div><i>4</i><b>Объясняем выбор</b><span>У каждого поставщика — причины рекомендации и вклад каждого фактора в балл. Плюс новые компании вне истории.</span></div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot"><div class="wrap">Данные: извещения, заявки и спецификации АИС ГЗ / ЭМ Санкт-Петербурга за 2024–2025 · Реестр МСП и ЕГРЮЛ ФНС · РНП (ЕИС). Внешние нейросетевые API не используются.</div></footer>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <button class="modal-close" id="modal-close" aria-label="Закрыть">×</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
