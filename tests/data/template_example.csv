@@ -1,0 +1,3 @@
+﻿procedure_id;procedure_name;product_name;okpd2_code;quantity;start_price;customer_inn;platform;is_smp;publish_date
+999999001;Поставка офисной бумаги;Бумага А4;17.12.14.110;;150000.00;7801234567;ЭМ;да;2025-08-01
+999999001;Поставка офисной бумаги;Бумага А3;17.12.14.110;;150000.00;7801234567;ЭМ;да;2025-08-01
