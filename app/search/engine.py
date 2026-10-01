@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import pickle
@@ -21,7 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from app.config import DATA_DIR, DB_PATH, INDEX_DIR, LO_REGION, SPB_REGION
+from app.config import DATA_DIR, DB_PATH, INDEX_DIR, LO_REGION, ROOT, SPB_REGION
 from app.core.text import doc_terms, lemma, normalize, process_query, stopwords
 
 TOP_LOTS = 3000          # сколько похожих лотов берём в агрегацию
@@ -52,6 +53,8 @@ FACTOR_LABELS = {
 _GOODS = re.compile(r"\b(поставк|закупк|приобретени|покупк|товар)\w*", re.I)
 _SERVICES = re.compile(r"\b(оказани|услуг|выполнени|работ|обслуживани|ремонт|монтаж|обучени|вывоз|уборк|охран|аренд)\w*", re.I)
 INTENT_BOOST = 4.0
+SIM_OK = 0.35            # с какой похожести закупку считаем «похожей» при оценке уверенности
+CONF_SCALE = {"high": 1.0, "medium": 0.85, "low": 0.6}  # множитель балла: слабое совпадение не должно выглядеть как 90+
 SYN_SCALE = 1.0  # множитель веса синонимов от модуля NLP (подбирается офлайн-оценкой)
 
 
@@ -160,8 +163,16 @@ class SearchEngine:
 
         names = con.execute("SELECT okpd2_code, sample_name, n_items FROM okpd2_names").df()
         names["code8"] = names["okpd2_code"].str[:OKPD_LEVEL]
-        self.okpd_names = (names.sort_values("n_items", ascending=False)
-                           .drop_duplicates("code8").set_index("code8")["sample_name"].to_dict())
+        sample = (names.sort_values("n_items", ascending=False)
+                  .drop_duplicates("code8").set_index("code8")["sample_name"].to_dict())
+        # официальные названия из классификатора ОК 034-2014; если кода нет — название родительской группы,
+        # и только в крайнем случае — самое частое название позиции из датасета
+        official_path = ROOT / "data" / "okpd2_names.json"
+        official = json.loads(official_path.read_text(encoding="utf-8")) if official_path.exists() else {}
+        self.okpd_names = {}
+        for c in set(sample) | set(self.code8_names):
+            self.okpd_names[c] = next((official[k] for k in (c, c[:7], c[:5], c[:4], c[:2]) if k in official),
+                                      sample.get(c, ""))
         con.close()
         # ИНН поставщиков, которые есть в реестре МСП (для закупок «только для СМП»)
         self.msp_inns: set[str] = set()
@@ -251,6 +262,53 @@ class SearchEngine:
         if not code_ids or len(ids) == 0:
             return 1.0
         return 1.0 if any(int(i) in code_ids for i in ids) else OKPD_MISMATCH
+
+    def _confidence(self, qp: dict, terms: list[str], pos: np.ndarray, sims: np.ndarray,
+                    okpd_from_spec: bool) -> dict:
+        """Насколько запрос вообще покрыт историей закупок (абсолютная оценка, а не относительная).
+
+        high   — похожих закупок много, все ключевые слова в них встречаются;
+        medium — похожих немного или часть ключевых слов в них не встречается;
+        low    — похожих закупок единицы: рекомендации приблизительные.
+        """
+        sw = stopwords()
+        core = []
+        for k in qp.get("keywords") or []:
+            for tok in normalize(k.get("lemma", "")).split():
+                t = tok if tok in self.vocab else lemma(tok)
+                if t not in sw and len(t) > 1 and t not in core:
+                    core.append(t)
+        core = core or terms
+        top = pos[:30]
+        unmatched = []
+        for t in core:
+            if t not in self.vocab:
+                unmatched.append(t)
+            elif len(top) and len(np.intersect1d(self.XT[self.vocab[t]].indices, top)) / len(top) < 0.05:
+                unmatched.append(t)
+        n_sim = int((sims >= SIM_OK).sum())
+        top_sim = float(sims[0]) if len(sims) else 0.0
+        if n_sim < 10 or top_sim < 0.3:
+            level = "low"
+        elif unmatched or n_sim < 30:
+            level = "medium"
+        else:
+            level = "high"
+        if level == "low" and okpd_from_spec:
+            level = "medium"  # текст редкий, но коды ОКПД2 заданы в спецификации — опираемся на них
+        if level == "low":
+            msg = (f"В истории закупок почти нет похожих (найдено {n_sim}). Рекомендации приблизительные: "
+                   "показаны поставщики ближайших по словам закупок. Уточните название или добавьте позиции и ОКПД2.")
+        elif unmatched:
+            words = ", ".join(f"«{t}»" for t in unmatched[:4])
+            msg = (f"В похожих закупках не встречается: {words}. Показаны поставщики, подходящие по остальным словам — "
+                   "проверьте, что это то, что вам нужно.")
+        elif level == "medium":
+            msg = f"Похожих закупок в истории немного ({n_sim}) — рейтинг менее надёжен, чем обычно."
+        else:
+            msg = ""
+        return {"level": level, "message": msg, "similar_lots": n_sim, "top_similarity": round(top_sim, 2),
+                "unmatched_terms": unmatched}
 
     def _weighted_terms(self, qp: dict, raw: str) -> tuple[list[str], dict[str, float] | None]:
         """Термы запроса с весами от модуля NLP (синоним весит меньше исходного слова),
@@ -402,10 +460,11 @@ class SearchEngine:
                 "platform": self._platform_share(q.platform, prof),
             }
             rows.append((inn, f, a, prof))
+        confidence = self._confidence(qp, terms, pos, sims, bool(given))
         inactive = {k for k, field_name in CONDITIONAL.items()
                     if not getattr(q, field_name) or (field_name == "customer_inn" and not cust)}
         return {"qp": qp, "terms": terms, "okpd": okpd_list, "rows": rows, "okpd_detail": okpd_detail,
-                "intent": intent, "cust": cust, "inactive": inactive}
+                "intent": intent, "cust": cust, "inactive": inactive, "confidence": confidence}
 
     @staticmethod
     def _price_fit(price: float | None, prof) -> float:
@@ -430,13 +489,19 @@ class SearchEngine:
         card = bool(q.customer_inn or q.price or q.platform and not q.platform_only or q.items)
         base = W_CARD if card else W
         weights = {k: w for k, w in base.items() if k not in c["inactive"] and w > 0}
-        norm = sum(weights.values()) or 1.0
+        scale = CONF_SCALE[c["confidence"]["level"]]
+        norm = (sum(weights.values()) or 1.0) / scale
         scored = sorted(((sum(weights.get(k, 0) * v for k, v in f.items()) / norm, inn, f, a, prof)
                          for inn, f, a, prof in c["rows"]), key=lambda r: -r[0])
         suppliers = [self._supplier_card(score, inn, f, a, prof, c["okpd_detail"].get(inn, []), c["cust"].get(inn))
                      for score, inn, f, a, prof in scored[: q.limit]]
         res = self._response(q, c["qp"], c["terms"], c["okpd"], suppliers, t0, total=len(scored))
         res["query"]["intent"] = c["intent"]
+        res["confidence"] = c["confidence"]
+        if c["confidence"]["level"] == "low":  # «Проверенный» при единичных совпадениях вводил бы в заблуждение
+            for sup in suppliers:
+                sup["status"] = "approx"
+                sup["status_reason"] = "точных совпадений в истории нет — поставщик из ближайших по словам закупок"
         res["weights"] = {k: round(w / norm, 4) for k, w in weights.items()}
         res["query"]["procurement"] = {
             "items": len(q.items), "customer_inn": q.customer_inn, "price": q.price,

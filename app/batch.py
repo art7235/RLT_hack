@@ -234,6 +234,9 @@ def _rows(batch: dict) -> tuple[list[dict], list[dict]]:
             "Позиций": len(p["input"]["items"]),
             "ОКПД2": ", ".join(o["code"] for o in r.get("okpd2", [])[:3]),
             "Тип": {"goods": "товар", "services": "работа/услуга"}.get(r["query"].get("intent"), ""),
+            "Уверенность подбора": {"high": "высокая", "medium": "средняя", "low": "низкая"}.get(
+                (r.get("confidence") or {}).get("level"), ""),
+            "Замечание": (r.get("confidence") or {}).get("message", ""),
             "Найдено из истории": len(hist),
             "Новых компаний": len(new),
             "Топ-1": hist[0]["name"] if hist else "",
