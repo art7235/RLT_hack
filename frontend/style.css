@@ -169,6 +169,11 @@ em { font-style: normal; }
 .batch-errors ul { margin: 6px 0 0; padding-left: 18px; }
 
 /* ---------- результат */
+.conf { display: flex; flex-direction: column; gap: 2px; border-radius: var(--radius); padding: 14px 18px; margin: 26px 0 -10px; font-size: 14.5px; border: 1px solid transparent; }
+.conf b { font-size: 15px; }
+.conf-medium { background: var(--warn-soft); color: var(--warn); border-color: #ecd59a; }
+.conf-low { background: var(--bad-soft); color: var(--bad); border-color: #f1b9b4; }
+.conf-mark { color: var(--warn); font-weight: 600; cursor: help; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 26px 0 16px; }
 .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; box-shadow: var(--shadow); }
 .kpi b { display: block; font-size: 26px; font-weight: 700; line-height: 1.2; }

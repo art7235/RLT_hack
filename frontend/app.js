@@ -16,7 +16,9 @@ const STATUS = {
   participant: ["Участник", "b-participant"],
   category: ["Профильный", "b-category"],
   new: ["Новый", "b-new"],
+  approx: ["Близкий профиль", "b-participant"],
 };
+const CONF_TITLE = { medium: "Совпадение неполное", low: "Точных совпадений в истории нет" };
 const INTENT = { goods: "Поставка товаров", services: "Работы / услуги" };
 const TAB_HINT = {
   dataset: "Поставщики, которые уже участвовали в похожих закупках АИС ГЗ и Электронного магазина. Нажмите на название, чтобы открыть карточку.",
@@ -42,8 +44,15 @@ fetch("/api/health").then((r) => r.json()).then((h) => {
   $("#health").textContent = `${fmtNum(h.lots)} закупок · ${fmtNum(h.suppliers)} поставщиков в базе`;
 }).catch(() => {});
 
-const params = new URLSearchParams(location.search);
-if (params.get("q")) { $("#q").value = params.get("q"); setMode("quick"); runQuick(); }
+// При обновлении страницы браузер восстанавливает старый текст в полях — очищаем формы.
+// Ссылка вида ?q=... выполняется один раз, после чего запрос из адреса убирается.
+window.addEventListener("pageshow", () => {
+  const q = new URLSearchParams(location.search).get("q");
+  $$("form").forEach((f) => f.reset());
+  setFile(null);
+  history.replaceState(null, "", location.pathname);
+  if (q) { $("#q").value = q; setMode("quick"); runQuick(); }
+});
 
 // ------------------------------------------------------------------ режимы
 function setMode(mode) {
@@ -92,7 +101,8 @@ async function request(btn, doFetch, onOk) {
 
 function showResult(data, scroll = true) {
   state.data = data;
-  state.results[state.mode === "file" ? "file" : state.mode] = data;
+  state.results[state.mode] = data;
+  renderConfidence();
   renderKpis();
   renderUnderstanding();
   setTab(state.tab === "external" && !(data.external || []).length ? "dataset" : state.tab);
@@ -113,7 +123,6 @@ function quickParams() {
 async function runQuick() {
   const p = quickParams();
   if (!p.get("q")) return;
-  history.replaceState(null, "", "?q=" + encodeURIComponent(p.get("q")));
   $("#csv").href = "/api/search.csv?" + p.toString();
   await request($("#form button[type=submit]"), () => fetch("/api/search?" + p.toString()), showResult);
 }
@@ -148,7 +157,6 @@ $("#card-form").addEventListener("submit", async (ev) => {
     $("#c-text").focus();
     return;
   }
-  history.replaceState(null, "", location.pathname);
   await request($("#card-form button[type=submit]"),
     () => fetch("/api/procurement", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
     showResult);
@@ -203,7 +211,8 @@ function renderBatch(b) {
       <td>${esc(p.input.text || p.input.items.slice(0, 2).join("; "))}<div class="sub2">${meta.join(" · ")}</div></td>
       <td>${(r.okpd2 || []).slice(0, 2).map((o) => esc(o.code)).join("<br>") || "—"}</td>
       <td class="sub2">${hist.slice(0, 3).map((s, k) => `${k + 1}. ${esc(s.name)}`).join("<br>") || "не найдено"}</td>
-      <td>${hist.length}<span class="sub2"> + ${(r.external || []).length} новых</span></td>
+      <td>${hist.length}<span class="sub2"> + ${(r.external || []).length} новых</span>
+        ${r.confidence && r.confidence.level !== "high" ? `<div class="sub2 conf-mark" title="${esc(r.confidence.message)}">${r.confidence.level === "low" ? "нет точных совпадений" : "совпадение неполное"}</div>` : ""}</td>
     </tr>`;
   }).join("");
   const errs = (b.errors || []).length ? `<div class="batch-errors"><b>Замечания по файлу (${b.errors.length})</b><ul>${b.errors.map((e) =>
@@ -233,6 +242,14 @@ function renderBatch(b) {
 }
 
 // ------------------------------------------------------------------ отрисовка результата
+function renderConfidence() {
+  const c = state.data.confidence;
+  const el = $("#conf");
+  if (!c || c.level === "high" || !c.message) { el.classList.add("hidden"); return; }
+  el.className = "conf conf-" + c.level;
+  el.innerHTML = `<b>${CONF_TITLE[c.level]}</b><span>${esc(c.message)}</span>`;
+}
+
 function renderKpis() {
   const d = state.data, all = [...d.suppliers, ...(d.external || [])];
   const verified = d.suppliers.filter((s) => s.status === "verified").length;
