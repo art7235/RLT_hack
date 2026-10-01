@@ -89,6 +89,10 @@ def main() -> None:
     train_full, test_full = collect(e, train_q, cards, True), collect(e, test_q, cards, True)
     print(f"[{time.time() - t0:5.0f}s] full cards collected")
 
+    import pickle
+    with open(DATA_DIR / "eval_features.pkl", "wb") as fh:  # для быстрых экспериментов с весами без пересчёта
+        pickle.dump({"feats": feats, "train": train_full, "test": test_full, "test_name": test_name}, fh)
+
     X = np.vstack([d["X"] for d in train_full if len(d["inns"])])
     y = np.concatenate([d["y"] for d in train_full if len(d["inns"])])
     clf = LogisticRegression(C=1.0, class_weight="balanced", max_iter=3000).fit(X, y)
