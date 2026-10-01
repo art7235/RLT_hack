@@ -1,0 +1,19 @@
+# данные организаторов и тяжёлые артефакты — не в репозитории (лежат в TH_DATA_DIR)
+*.zip
+*.pdf
+*.xlsx
+*.duckdb
+*.sqlite
+*.parquet
+*.npz
+*.npy
+*.pkl
+data/raw/
+
+# окружение
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.claude/
+.vscode/
