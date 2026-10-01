@@ -1,0 +1,13 @@
+[Unit]
+Description=Tenderhack supplier search
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/tenderhack
+Environment=TH_DATA_DIR=/data/tenderhack
+ExecStart=/opt/tenderhack/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80 --workers 1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
