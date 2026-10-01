@@ -50,13 +50,14 @@ FACTOR_LABELS = {
     "customer_rel": "Работал с заказчиком (эта категория)", "customer_any": "Работал с заказчиком",
     "price": "Подходит по цене", "platform": "Опыт на площадке", "focus": "Специализация на категории",
 }
-FACTOR_LABELS["wins"] = "Доля побед в категории"
+FACTOR_LABELS["wins"] = "Доля побед в категории (ЭМ)"
 FACTOR_LABELS["breadth"] = "Заказчиков в похожих закупках"
 
 
 _GOODS = re.compile(r"\b(поставк|закупк|приобретени|покупк|товар)\w*", re.I)
 _SERVICES = re.compile(r"\b(оказани|услуг|выполнени|работ|обслуживани|ремонт|монтаж|обучени|вывоз|уборк|охран|аренд)\w*", re.I)
 INTENT_BOOST = 4.0
+WIN_PRIOR = 0.35         # средняя доля побед в ЭМ — когда о конкуренции ничего не известно
 SIM_OK = 0.35            # с какой похожести закупку считаем «похожей» при оценке уверенности
 CONF_SCALE = {"high": 1.0, "medium": 0.85, "low": 0.6}  # множитель балла: слабое совпадение не должно выглядеть как 90+
 SYN_SCALE = 1.0  # множитель веса синонимов от модуля NLP (подбирается офлайн-оценкой)
@@ -79,6 +80,16 @@ def _okpd_is_goods(code: str) -> bool:
         return int(code[:2]) <= 32  # 33 — ремонт и монтаж оборудования, это услуги
     except ValueError:
         return False
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """1 процедура, 2 процедуры, 5 процедур."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} {one}"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} {few}"
+    return f"{n} {many}"
 
 
 def okpd_prefix(code: str | None) -> str:
@@ -250,6 +261,12 @@ class SearchEngine:
             leader = max(votes, key=votes.get)
             if _okpd_is_goods(leader) == (intent == "goods"):
                 votes = {c: v for c, v in votes.items() if _okpd_is_goods(c) == (intent == "goods")}
+        # «21.20» и «21.20.10» — один и тот же товар, закодированный с разной глубиной: голоса короткого
+        # кода отдаём самому сильному из его более точных кодов
+        for short in sorted(votes, key=len):
+            longer = [c for c in votes if c != short and c.startswith(short) and len(short) >= 5]
+            if longer:
+                votes[max(longer, key=votes.get)] += votes.pop(short)
         total = sum(votes.values())
         ranked = sorted(((c, v / total) for c, v in votes.items()), key=lambda x: -x[1])
         top_share = ranked[0][1]
@@ -257,6 +274,16 @@ class SearchEngine:
                  "name": self.okpd_names.get(c, ""),
                  "matched_item": best_item.get(c, (0, ""))[1]}
                 for c, sh in ranked[:5] if sh >= top_share * 0.15]
+
+    def _expand_codes(self, okpd: list[tuple[str, float]]) -> dict[str, float]:
+        """В данных ~5% позиций закодированы неполно (у лекарств 29% — просто «21.20»).
+        Код из данных считается совпавшим с кодом закупки, если один из них — префикс другого (не короче XX.YY)."""
+        out: dict[str, float] = {}
+        for c, share in okpd:
+            for name in self.code8_names:
+                if min(len(name), len(c)) >= 5 and (name.startswith(c) or c.startswith(name)):
+                    out[name] = max(out.get(name, 0.0), share)
+        return out
 
     def _lot_codes(self, p: int) -> list[str]:
         return list(self.code8_names[self.lot_okpd_ids[self.lot_okpd_ptr[p]:self.lot_okpd_ptr[p + 1]]])
@@ -404,14 +431,15 @@ class SearchEngine:
             intent = qp.get("intent") or detect_intent(text)
             okpd_list = self.predict_okpd(terms, pos, sims, intent, qweights)
         okpd = [(o["code"], o["share"]) for o in okpd_list]
-        okpd_codes = {self.code8_id[c] for c, _ in okpd if c in self.code8_id}
+        okpd_shares = self._expand_codes(okpd)
+        okpd_codes = {self.code8_id[c] for c in okpd_shares}
 
         ref_date = np.datetime64(q.before_date) if q.before_date else self.max_date + np.timedelta64(1, "D")
         # В балл идут все лоты с общими словами (с весом s² и штрафом за чужой ОКПД2),
         # а в счётчики и доказательства — только по-настоящему похожие: s >= SIM_OK и ОКПД2 совпал.
         agg: dict[str, dict] = defaultdict(lambda: {
-            "text": 0.0, "lots": [], "wins": 0, "comp_wins": 0, "parts": 0, "customers": set(), "last": None,
-            "max_sim": 0.0})
+            "text": 0.0, "lots": [], "wins": 0, "parts": 0, "em_parts": 0, "em_wins": 0, "comp_wins": 0,
+            "ais_wins": 0, "customers": set(), "last": None, "max_sim": 0.0})
         cid = self.customer_id.get((q.customer_inn or "").strip())
         for p, s in zip(pos, sims):
             age = max(int((ref_date - self.lot_date[p]).astype(int)), 0)
@@ -428,8 +456,13 @@ class SearchEngine:
                 if not strict:
                     continue
                 a["wins"] += win
-                a["comp_wins"] += win and n_bidders > 1
                 a["parts"] += 1
+                if self.lot_is_em[p]:   # Электронный магазин: видны все участники
+                    a["em_parts"] += 1
+                    a["em_wins"] += win
+                    a["comp_wins"] += win and n_bidders > 1
+                else:                   # АИС ГЗ: в выгрузке есть только победитель процедуры
+                    a["ais_wins"] += win
                 a["customers"].add(self.lot_customer[p])
                 if len(a["lots"]) < 40:
                     a["lots"].append((p, float(s), win, bool(cid is not None and self.lot_customer[p] == cid)))
@@ -441,7 +474,7 @@ class SearchEngine:
         okpd_exp: dict[str, float] = defaultdict(float)
         okpd_detail: dict[str, list] = defaultdict(list)
         if okpd:
-            shares = dict(okpd)
+            shares = okpd_shares
             sub = self.sokpd[self.sokpd["code8"].isin(shares)]
             for code8, inn, n_lots, n_wins in sub[["code8", "inn", "n_lots", "n_wins"]].itertuples(index=False):
                 okpd_exp[inn] += shares[code8] * (n_wins * WIN_W + (n_lots - n_wins) * PART_W)
@@ -472,8 +505,11 @@ class SearchEngine:
                 "rel_wins": math.log1p(a["wins"]) / max_wins if a else 0.0,
                 "max_sim": a["max_sim"] if a else 0.0,
                 # доля побед в ЭТОЙ категории (сглаженная), а не по всем закупкам компании
-                "wins": ((a["wins"] + 1) / (a["parts"] + 3)) if a and a["parts"]
-                        else 0.5 * float(prof["win_rate"]) if prof is not None else 0.0,
+                # Доля побед считается только по Электронному магазину: в АИС ГЗ выгружены одни победители,
+                # там она всегда 100% и ничего не значит. Нет данных ЭМ — нейтральное значение.
+                "wins": ((a["em_wins"] + 1) / (a["em_parts"] + 3)) if a and a["em_parts"]
+                        else WIN_PRIOR if a and a["ais_wins"]
+                        else 0.5 * self._em_win_rate(prof),
                 "recency": (0.5 ** (max(int((ref_date - a["last"]).astype(int)), 0) / HALF_LIFE_DAYS))
                            if a and a["last"] is not None else 0.0,
                 # специализация: какая доля закупок поставщика приходится на ОКПД2 этой закупки
@@ -494,6 +530,13 @@ class SearchEngine:
                     if not getattr(q, field_name) or (field_name == "customer_inn" and not cust)}
         return {"qp": qp, "terms": terms, "okpd": okpd_list, "rows": rows, "okpd_detail": okpd_detail,
                 "intent": intent, "cust": cust, "inactive": inactive, "confidence": confidence}
+
+    @staticmethod
+    def _em_win_rate(prof) -> float:
+        """Общая доля побед поставщика в Электронном магазине (где видны проигравшие)."""
+        if prof is None or "n_eshop_wins" not in prof.index or not prof["n_eshop"]:
+            return WIN_PRIOR
+        return float(prof["n_eshop_wins"]) / float(prof["n_eshop"])
 
     @staticmethod
     def _price_fit(price: float | None, prof) -> float:
@@ -540,19 +583,25 @@ class SearchEngine:
 
     # ------------------------------------------------------------- output
     def _status(self, a, okpd_det) -> tuple[str, str]:
-        """Статус — по по-настоящему похожим закупкам и с учётом того, как часто поставщик в них побеждает."""
-        wins, parts = (a["wins"], a["parts"]) if a else (0, 0)
-        comp = a["comp_wins"] if a else 0
+        """Статус — по по-настоящему похожим закупкам. Долю побед проверяем только там, где она измерима (ЭМ)."""
+        wins = a["wins"] if a else 0
+        em_parts, em_wins, ais_wins = (a["em_parts"], a["em_wins"], a["ais_wins"]) if a else (0, 0, 0)
         okpd_wins = sum(w for _, _, w in okpd_det)
-        rate = wins / parts if parts else 0.0
-        if wins >= 3 and rate >= 0.25:  # много участвует, но почти не побеждает — это не «проверенный»
-            return "verified", (f"победил в {wins} из {parts} похожих закупок ({rate:.0%})"
-                                + (f", из них {comp} — при конкуренции" if comp else ""))
-        if wins >= 1 or okpd_wins >= 3:
-            return "experienced", (f"победил в {wins} из {parts} похожих закупок ({rate:.0%})" if wins
-                                   else f"{okpd_wins} побед по тем же кодам ОКПД2, но не в похожих по названию")
-        if parts:
-            return "participant", f"участвовал в {parts} похожих закупках, но не побеждал"
+        em_rate = em_wins / em_parts if em_parts else 0.0
+        parts = []
+        if em_parts:
+            parts.append(f"в Электронном магазине победил в {em_wins} из {em_parts} похожих закупок ({em_rate:.0%})")
+        if ais_wins:
+            parts.append("победитель " + plural(ais_wins, "похожей процедуры", "похожих процедур", "похожих процедур") + " АИС ГЗ")
+        text = "; ".join(parts)
+        if wins >= 3 and (em_parts < 3 or em_rate >= 0.25):
+            return "verified", text
+        if wins >= 1:
+            return "experienced", text + ("; доля побед в Электронном магазине ниже 25%" if wins >= 3 else "")
+        if okpd_wins >= 3:
+            return "experienced", f"{okpd_wins} побед по тем же кодам ОКПД2, но не в похожих по названию закупках"
+        if em_parts:
+            return "participant", f"участвовал в {em_parts} похожих закупках Электронного магазина, но не побеждал"
         return "category", "работал по тем же кодам ОКПД2 или в закупках с общими словами; близких по предмету нет"
 
     def _supplier_card(self, score, inn, f, a, prof, okpd_det, cust=None) -> dict:
@@ -565,12 +614,18 @@ class SearchEngine:
             elif cust["wins"]:
                 reasons.append(f"Уже работал с этим заказчиком (побед: {cust['wins']})")
         if a and a["parts"]:
-            line = (f"Похожие закупки (близкое название и тот же ОКПД2): участвовал в {a['parts']}, "
-                    f"победил в {a['wins']}")
-            if a["wins"]:
-                line += (f", из них при конкуренции (2+ участника) — {a['comp_wins']}" if a["comp_wins"]
-                         else "; все победы — в закупках с единственным участником")
-            reasons.append(line + f". Последняя — {a['last']}")
+            # «похожие» = близкое название и тот же ОКПД2
+            if a["em_parts"]:
+                line = (f"Похожие закупки в Электронном магазине: участвовал в {a['em_parts']}, "
+                        f"победил в {a['em_wins']}")
+                if a["em_wins"]:
+                    line += (f", из них при 2+ участниках — {a['comp_wins']}" if a["comp_wins"]
+                             else "; во всех был единственным участником")
+                reasons.append(line)
+            if a["ais_wins"]:
+                reasons.append("Победитель " + plural(a["ais_wins"], "похожей процедуры", "похожих процедур", "похожих процедур")
+                               + " АИС ГЗ (по АИС ГЗ в данных есть только победители — другие участники не раскрываются)")
+            reasons.append(f"Последняя похожая закупка — {a['last']}")
             if len(a["customers"]) > 1:
                 reasons.append(f"В похожих закупках работал с {len(a['customers'])} разными заказчиками")
         elif a:
@@ -592,8 +647,13 @@ class SearchEngine:
             elif prof["region_code"] == LO_REGION:
                 reasons.append("Стоит на налоговом учёте в Ленинградской области (по КПП в заявках)")
             if prof["n_lots"] >= 20:
-                reasons.append(f"Всего {int(prof['n_lots'])} закупок за 2024–2025, доля побед "
-                               f"{float(prof['win_rate']) * 100:.0f}%")
+                total = f"Всего за 2024–2025: {int(prof['n_lots'])} закупок"
+                if prof["n_eshop"] and "n_eshop_wins" in prof.index:
+                    total += (f"; в Электронном магазине победил в {int(prof['n_eshop_wins'])} из {int(prof['n_eshop'])} "
+                              f"({float(prof['n_eshop_wins']) / float(prof['n_eshop']):.0%})")
+                if prof["n_aisgz"]:
+                    total += "; победитель " + plural(prof["n_aisgz"], "процедуры", "процедур", "процедур") + " АИС ГЗ"
+                reasons.append(total)
         status, status_reason = self._status(a, okpd_det)
         evidence = []
         # доказательства: сначала закупки этого же заказчика, затем победы, затем самые похожие
@@ -631,6 +691,7 @@ class SearchEngine:
                 "n_lots": int(prof["n_lots"]),
                 "n_wins": int(prof["n_wins"]),
                 "win_rate": float(prof["win_rate"]),
+                "n_eshop_wins": int(prof["n_eshop_wins"]) if "n_eshop_wins" in prof.index else None,
                 "n_customers": int(prof["n_customers"]),
                 "n_eshop": int(prof["n_eshop"]),
                 "n_aisgz": int(prof["n_aisgz"]),

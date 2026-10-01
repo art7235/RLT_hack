@@ -20,6 +20,10 @@ def build() -> None:
     if DB_PATH.exists():
         DB_PATH.unlink()
     con = duckdb.connect(str(DB_PATH))
+    # на машинах с 4 ГБ памяти агрегаты не помещаются в RAM — ограничиваем и даём DuckDB сбрасывать на диск
+    con.execute("SET memory_limit='1200MB'")
+    con.execute("SET threads=2")
+    con.execute("SET preserve_insertion_order=false")
     t0 = time.time()
 
     def step(name: str, sql: str) -> None:
@@ -38,7 +42,8 @@ def build() -> None:
                CASE WHEN is_eshop_or_aisgz = 'ЭМ' THEN 'ЭМ' ELSE 'АИС ГЗ' END AS platform,
                is_smp = 'true'                       AS is_smp,
                customer_inn,
-               customer_kpp
+               customer_kpp,
+               nullif(trim(reqnum), '')              AS reqnum   -- номер извещения в ЕИС (есть у процедур АИС ГЗ)
         FROM {_csv(RAW_NOTICES)}
     """)
 
@@ -82,7 +87,9 @@ def build() -> None:
         SELECT inn,
                mode(kpp)                                            AS kpp,
                CASE WHEN length(inn) = 12 THEN 'ИП' ELSE 'ЮЛ' END   AS entity_type,
-               substr(coalesce(mode(kpp), inn), 1, 2)               AS region_code,
+               CASE WHEN length(inn) = 12 THEN substr(inn, 1, 2)
+                    WHEN mode(kpp) IS NOT NULL AND substr(mode(kpp), 1, 2) <> '00' THEN substr(mode(kpp), 1, 2)
+                    ELSE substr(inn, 1, 2) END                      AS region_code,
                count(DISTINCT lot_id)                               AS n_lots,
                count(DISTINCT lot_id) FILTER (WHERE is_winner)      AS n_wins,
                round(count(DISTINCT lot_id) FILTER (WHERE is_winner)
@@ -90,6 +97,7 @@ def build() -> None:
                count(DISTINCT customer_inn)                         AS n_customers,
                count(DISTINCT lot_id) FILTER (WHERE platform = 'ЭМ')     AS n_eshop,
                count(DISTINCT lot_id) FILTER (WHERE platform = 'АИС ГЗ') AS n_aisgz,
+               count(DISTINCT lot_id) FILTER (WHERE platform = 'ЭМ' AND is_winner) AS n_eshop_wins,
                min(publish_date)                                    AS first_date,
                max(publish_date)                                    AS last_date,
                sum(start_price) FILTER (WHERE is_winner)            AS sum_won,

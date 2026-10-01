@@ -27,13 +27,16 @@ def _history_tables(con) -> tuple[pd.DataFrame, pd.DataFrame]:
         SELECT p.inn,
                mode(p.kpp) AS kpp,
                CASE WHEN length(p.inn) = 12 THEN 'ИП' ELSE 'ЮЛ' END AS entity_type,
-               substr(coalesce(mode(p.kpp), p.inn), 1, 2) AS region_code,
+               CASE WHEN length(p.inn) = 12 THEN substr(p.inn, 1, 2)
+                    WHEN mode(p.kpp) IS NOT NULL AND substr(mode(p.kpp), 1, 2) <> '00' THEN substr(mode(p.kpp), 1, 2)
+                    ELSE substr(p.inn, 1, 2) END AS region_code,
                count(DISTINCT lot_id) AS n_lots,
                count(DISTINCT lot_id) FILTER (WHERE is_winner) AS n_wins,
                round(count(DISTINCT lot_id) FILTER (WHERE is_winner) / count(DISTINCT lot_id), 3) AS win_rate,
                count(DISTINCT customer_inn) AS n_customers,
                count(DISTINCT lot_id) FILTER (WHERE platform = 'ЭМ') AS n_eshop,
                count(DISTINCT lot_id) FILTER (WHERE platform = 'АИС ГЗ') AS n_aisgz,
+               count(DISTINCT lot_id) FILTER (WHERE platform = 'ЭМ' AND is_winner) AS n_eshop_wins,
                max(publish_date) AS last_date,
                median(start_price) AS median_price
         FROM participations p JOIN lots l USING (lot_id)

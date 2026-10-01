@@ -299,6 +299,22 @@ class EnrichStore:
                 break
         return self._new_cards(top, recs, why, match)
 
+    def pool_scores(self, okpd: list[dict]) -> np.ndarray:
+        """Баллы всех компаний пула по кодам ОКПД2 закупки (та же формула, что в выдаче; -1 — не подходит).
+        Нужна для офлайн-проверки блока «Новые компании» (app/eval/new_companies_eval.py)."""
+        mapping = self._okved_mapping()
+        sc = np.zeros(len(self.pool))
+        for o in okpd[:2]:
+            cls, share = o["code"][:5], o["share"]
+            typical = mapping.get(cls, Counter())
+            total = sum(typical.values()) or 1
+            plan = [(cls, 2.0)] + [(ok, 1.5 * w / total + 0.5) for ok, w in typical.most_common(4)
+                                   if ok != cls and w / total >= 0.08]
+            for ok, w in plan:
+                sc[self.pool_main.get(ok, [])] += w * share
+                sc[self.pool_extra.get(ok, [])] += 0.4 * w * share
+        return np.where(sc > 0, sc + self.pool_static, -1)
+
     def _new_from_pool(self, plans: list[tuple[str, float, str]], exclude: set[str], limit: int) -> list[dict]:
         """Офлайн-подбор по выгрузке реестра МСП: векторный скоринг по индексу ОКВЭД."""
         sc = np.zeros(len(self.pool))
