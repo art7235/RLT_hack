@@ -101,6 +101,12 @@ def _read_table(data: bytes, filename: str = "") -> pd.DataFrame:
         text = data.decode("utf-8", errors="replace")
     head = "\n".join(text.splitlines()[:5])
     sep = max([";", ",", "\t", "|"], key=head.count)
+    # заголовок, где две колонки попали в одни кавычки ("reqnum;procedure_name"), сдвигает все данные —
+    # разбираем такую ячейку обратно на отдельные названия
+    first, _, rest = text.partition("\n")
+    names = next(csv.reader([first.strip("\r\n")], delimiter=sep), [])
+    if any(sep in n for n in names):
+        text = sep.join(x.strip() for n in names for x in n.split(sep)) + "\n" + rest
     return pd.read_csv(io.StringIO(text), sep=sep, dtype=str, keep_default_na=False, skip_blank_lines=True,
                        quotechar='"', engine="python")
 

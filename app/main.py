@@ -12,6 +12,7 @@ from typing import Literal
 
 import duckdb
 from fastapi import FastAPI, File, HTTPException, Query as Q, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,6 +24,8 @@ from app.search.engine import Query, get_engine
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Поиск поставщиков АИС ГЗ / ЭМ СПб")
+# ответ пакетной обработки — около 4 МБ текста на 40 закупок; со сжатием уходит в 10 раз меньше
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 FRONT = ROOT / "frontend"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -51,11 +54,12 @@ def _penalize_rnp(res: dict) -> None:
 
 
 def _run_search(q: str, platform: str | None, region_only: bool, limit: int,
-                external: bool, live_enrich: bool) -> dict:
+                external: bool, live_enrich: bool, exclude: str = "") -> dict:
     if not q.strip():
         raise HTTPException(400, "пустой запрос")
     res = get_engine().search(Query(text=q, platform=platform, platform_only=bool(platform),
-                                    region_only=region_only, limit=limit))
+                                    region_only=region_only, limit=limit,
+                                    exclude_terms=[t for t in exclude.split(",") if t.strip()]))
     store = get_store()
     store.enrich_cards(res["suppliers"], live=live_enrich)
     _penalize_rnp(res)
@@ -74,8 +78,9 @@ def search(
     limit: int = Q(20, ge=1, le=100),
     external: bool = True,
     live_enrich: bool = True,
+    exclude: str = "",  # ключевые слова через запятую, которые пользователь убрал из поиска
 ) -> dict:
-    return _run_search(q, platform, region_only, limit, external, live_enrich)
+    return _run_search(q, platform, region_only, limit, external, live_enrich, exclude)
 
 
 @app.get("/api/search.csv")
@@ -142,13 +147,16 @@ class Procurement(BaseModel):
     customer_inn: str | None = None
     platform: Literal["ЭМ", "АИС ГЗ"] | None = None
     is_smp: bool | None = None
+    exclude_terms: list[str] = []  # ключевые слова, которые пользователь убрал в блоке «Как система поняла закупку»
 
 
 def _run_procurement(p: dict, limit: int, n_new: int, live: bool) -> dict:
-    fields = {k: p.get(k) for k in ("text", "items", "okpd_codes", "price", "customer_inn", "platform", "is_smp")}
+    fields = {k: p.get(k) for k in ("text", "items", "okpd_codes", "price", "customer_inn", "platform", "is_smp",
+                                    "exclude_terms")}
     fields["text"] = fields["text"] or ""
     fields["items"] = fields["items"] or []
     fields["okpd_codes"] = fields["okpd_codes"] or []
+    fields["exclude_terms"] = fields["exclude_terms"] or []
     res = get_engine().search(Query(limit=limit, **fields))
     store = get_store()
     store.enrich_cards(res["suppliers"], live=live)
@@ -159,10 +167,17 @@ def _run_procurement(p: dict, limit: int, n_new: int, live: bool) -> dict:
 
 
 @app.post("/api/procurement")
-def procurement(p: Procurement, limit: int = Q(20, ge=1, le=100), n_new: int = Q(10, ge=0, le=30)) -> dict:
+def procurement(p: Procurement, limit: int = Q(20, ge=1, le=100), n_new: int = Q(10, ge=0, le=30),
+                batch_id: str = "", index: int = -1) -> dict:
+    """batch_id + index — повторный подбор одной закупки из уже обработанного файла (пользователь убрал
+    лишние ключевые слова): новый результат заменяет старый и в выгрузке Excel / CSV."""
     if not p.text.strip() and not any(i.strip() for i in p.items):
         raise HTTPException(400, "укажите наименование закупки или хотя бы одну позицию")
-    return _run_procurement(p.model_dump(), limit, n_new, live=True)
+    res = _run_procurement(p.model_dump(), limit, n_new, live=True)
+    stored = batch_mod.get_batch(batch_id) if batch_id else None
+    if stored and 0 <= index < len(stored["procedures"]):
+        stored["procedures"][index]["result"] = res
+    return res
 
 
 @app.get("/api/template.csv")
@@ -177,21 +192,37 @@ def template_xlsx():
                              headers={"Content-Disposition": "attachment; filename=procurement_template.xlsx"})
 
 
+_PROGRESS: dict[str, dict] = {}  # номер задания (придумывает браузер) -> сколько закупок пакета уже обработано
+
+
+@app.get("/api/batch/progress/{job}")
+def batch_progress(job: str) -> dict:
+    return _PROGRESS.get(job) or {"done": 0, "total": 0}
+
+
 @app.post("/api/batch")
-async def batch(file: list[UploadFile] = File(...), limit: int = Q(10, ge=1, le=50),
-                n_new: int = Q(5, ge=0, le=20)) -> dict:
-    """Один файл по шаблону или несколько файлов выгрузки (извещения + позиции) — склеиваются по номеру лота."""
-    files = [(await f.read(), f.filename or "") for f in file]
+def batch(file: list[UploadFile] = File(...), limit: int = Q(10, ge=1, le=50),
+          n_new: int = Q(5, ge=0, le=20), job: str = Q("", max_length=40)) -> dict:
+    """Один файл по шаблону или несколько файлов выгрузки (извещения + позиции) — склеиваются по номеру лота.
+    Обычная (не async) функция: пакет считается десятки секунд, и в отдельном потоке он не блокирует
+    остальные запросы к серверу — в том числе опрос прогресса по номеру задания job."""
+    files = [(f.file.read(), f.filename or "") for f in file]
     procs, errors = batch_mod.parse_procurements(files)
     live = len(procs) <= 5  # большие пакеты — только кэш, чтобы не упираться в лимиты ФНС
     out = []
-    for p in procs:
+    if job:
+        _PROGRESS[job] = {"done": 0, "total": len(procs)}
+    for k, p in enumerate(procs, 1):
         try:
             res = _run_procurement(p, limit, n_new, live)
         except Exception as e:  # noqa: BLE001 — одна плохая закупка не должна ронять весь пакет
             errors.append({"row": None, "procedure_id": p["procedure_id"], "problem": f"ошибка обработки: {e}"})
             continue
+        finally:
+            if job:
+                _PROGRESS[job]["done"] = k
         out.append({"procedure_id": p["procedure_id"], "input": p, "result": res})
+    _PROGRESS.pop(job, None)
     result = {"procedures": out, "errors": errors, "filename": ", ".join(f.filename or "" for f in file)}
     result["batch_id"] = batch_mod.save_batch(result)
     return result

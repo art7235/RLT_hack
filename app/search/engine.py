@@ -109,6 +109,7 @@ class Query:
     price: float | None = None                            # НМЦ
     is_smp: bool | None = None                            # закупка только для СМП
     platform_only: bool = False      # искать похожие закупки только на этой площадке (фильтр быстрого поиска)
+    exclude_terms: list[str] = field(default_factory=list)  # ключевые слова, которые пользователь убрал вручную
     exclude_lot_ids: set[int] = field(default_factory=set)  # для офлайн-оценки
     before_date: date | None = None                          # для офлайн-оценки
 
@@ -304,7 +305,7 @@ class SearchEngine:
         return 1.0 if any(int(i) in code_ids for i in ids) else OKPD_MISMATCH
 
     def _confidence(self, qp: dict, terms: list[str], pos: np.ndarray, sims: np.ndarray,
-                    okpd_from_spec: bool) -> dict:
+                    okpd_from_spec: bool, excl: set[str] = frozenset()) -> dict:
         """Насколько запрос вообще покрыт историей закупок (абсолютная оценка, а не относительная).
 
         high   — похожих закупок много, все ключевые слова в них встречаются;
@@ -316,7 +317,7 @@ class SearchEngine:
         for k in qp.get("keywords") or []:
             for tok in normalize(k.get("lemma", "")).split():
                 t = tok if tok in self.vocab else lemma(tok)
-                if t not in sw and len(t) > 1 and t not in core:
+                if t not in sw and len(t) > 1 and t not in core and t not in excl:
                     core.append(t)
         core = core or terms
         top = pos[:30]
@@ -430,6 +431,11 @@ class SearchEngine:
             for t in doc_terms(" ".join(items)):
                 qweights.setdefault(t, 0.7)
             terms = list(qweights)
+        excl = {normalize(t).strip() for t in q.exclude_terms if t and t.strip()}
+        if excl:  # пользователь убрал слова, которые не относятся к предмету закупки
+            terms = [t for t in terms if t not in excl]
+            if qweights:
+                qweights = {t: w for t, w in qweights.items() if t not in excl}
         pos, sims = self.similar_lots(terms, q, qweights)
         given = self._given_okpd(q)
         if given:
@@ -534,11 +540,12 @@ class SearchEngine:
                 "platform": self._platform_share(q.platform, prof),
             }
             rows.append((inn, f, a, prof))
-        confidence = self._confidence(qp, terms, pos, sims, bool(given))
+        confidence = self._confidence(qp, terms, pos, sims, bool(given), excl)
         inactive = {k for k, field_name in CONDITIONAL.items()
                     if not getattr(q, field_name) or (field_name == "customer_inn" and not cust)}
         return {"qp": qp, "terms": terms, "okpd": okpd_list, "rows": rows, "okpd_detail": okpd_detail,
-                "intent": intent, "cust": cust, "inactive": inactive, "confidence": confidence}
+                "intent": intent, "cust": cust, "inactive": inactive, "confidence": confidence,
+                "excluded": sorted(excl)}
 
     @staticmethod
     def _em_win_rate(prof) -> float:
@@ -578,6 +585,7 @@ class SearchEngine:
                      for score, inn, f, a, prof in scored[: q.limit]]
         res = self._response(q, c["qp"], c["terms"], c["okpd"], suppliers, t0, total=len(scored))
         res["query"]["intent"] = c["intent"]
+        res["query"]["excluded"] = c["excluded"]
         res["confidence"] = c["confidence"]
         if c["confidence"]["level"] == "low":  # «Проверенный» при единичных совпадениях вводил бы в заблуждение
             for sup in suppliers:
