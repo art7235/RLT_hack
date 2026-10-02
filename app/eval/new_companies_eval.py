@@ -52,8 +52,14 @@ def main(n_lots: int = 3000) -> None:
     st = EnrichStore()
     # пул «как в конце 2024 года»: всё, чего не было в истории 2024
     in_hist = st.rmsp.index.astype(object).isin(hist)
-    mask = (~in_hist & st.rmsp["region_code"].astype(object).isin([SPB_REGION, LO_REGION]).to_numpy()
-            & np.asarray(st.rmsp.index.astype(object).str.len() == 10))
+    # те же правила, что в рабочем пуле: местные юрлица + иногородние производители (малые и средние)
+    # и средние оптовики
+    region = st.rmsp["region_code"].astype(object)
+    cls = st.rmsp["okved_main"].astype(object).fillna("").str.extract(r"^(\d+)")[0].fillna("0").astype(int)
+    cat = st.rmsp["msp_category"].astype(object)
+    federal = (((cls >= 10) & (cls <= 32) & cat.isin(["малое", "среднее"])) | ((cls == 46) & (cat == "среднее"))).to_numpy()
+    mask = (~in_hist & np.asarray(st.rmsp.index.astype(object).str.len() == 10)
+            & (region.isin([SPB_REGION, LO_REGION]).to_numpy() | federal))
     st.pool = st.rmsp[mask]
     st._build_pool_index()
     st._class_wins, st._okved_by_class, st._mapping_built_at = class_wins, {}, 0.0
@@ -65,7 +71,7 @@ def main(n_lots: int = 3000) -> None:
     why_not = Counter()
     for lot, inn, codes in sample:
         if inn not in pos_of:
-            why_not["ИП" if len(inn) == 12 else "нет в реестре МСП СПб/ЛО (крупная или иногородняя)"] += 1
+            why_not["ИП" if len(inn) == 12 else "нет в пуле (крупная компания или иногородняя не из выгрузки)"] += 1
             continue
         eligible += 1
         cnt = Counter(codes)

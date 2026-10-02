@@ -22,11 +22,11 @@ const CONF_TITLE = { medium: "Совпадение неполное", low: "То
 const INTENT = { goods: "Поставка товаров", services: "Работы / услуги" };
 const TAB_HINT = {
   dataset: "Поставщики, которые уже участвовали в похожих закупках АИС ГЗ и Электронного магазина. Нажмите на название, чтобы открыть карточку.",
-  external: "Компании Санкт-Петербурга и Ленобласти из реестра МСП, которых нет в истории закупок, но вид деятельности подходит.",
+  external: "Компании из реестра МСП, которых нет в истории закупок, но вид деятельности подходит: местные — для любых закупок, производители и оптовики из других регионов — для товаров.",
 };
 
 // результаты хранятся отдельно для каждого режима, чтобы вкладки не показывали чужую выдачу
-const state = { mode: "card", tab: "dataset", role: "", data: null, results: { card: null, quick: null, file: null }, batch: null };
+const state = { mode: "card", tab: "dataset", role: "", size: "", data: null, results: { card: null, quick: null, file: null }, batch: null };
 
 // ------------------------------------------------------------------ init
 $("#examples").innerHTML = EXAMPLES.map((e) => `<button type="button">${esc(e)}</button>`).join("");
@@ -36,6 +36,7 @@ $("#examples").parentElement.addEventListener("click", (ev) => {
 $$(".mode").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 $$(".tab").forEach((t) => t.addEventListener("click", () => setTab(t.dataset.tab)));
 $("#role-filter").addEventListener("change", (e) => { state.role = e.target.value; renderList(); });
+$("#size-filter").addEventListener("change", (e) => { state.size = e.target.value; renderList(); });
 $("#modal-close").addEventListener("click", closeModal);
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
@@ -301,8 +302,9 @@ function renderList() {
   if (!d) return;
   let items = state.tab === "dataset" ? d.suppliers : (d.external || []);
   if (state.role) items = items.filter((s) => s.role === state.role);
+  if (state.size) items = items.filter((s) => s.size === state.size);
   if (!items.length) {
-    $("#list").innerHTML = `<div class="empty">${state.role ? "Нет поставщиков с такой ролью — сбросьте фильтр «Все роли»"
+    $("#list").innerHTML = `<div class="empty">${state.role || state.size ? "Нет поставщиков с такими фильтрами — сбросьте роль и размер"
       : state.tab === "external" ? "Новые компании не найдены" : "Поставщики не найдены — попробуйте уточнить название или добавить позиции"}</div>`;
     return;
   }
@@ -353,6 +355,7 @@ function card(s, rank, d) {
     </div>` : "";
   const extra = [];
   if (s.msp_category) extra.push(`${esc(s.msp_category)} предприятие`);
+  if (s.source === "external" && s.region_name && !/Петербург|Ленинград/.test(s.region_name)) extra.push(esc(s.region_name));
   if (s.employees) extra.push(`${s.employees} сотр.`);
   const reasons = (s.reasons || []).map((r) => `<li${/^Внимание/.test(r) ? ' class="alert"' : ""}>${esc(r)}</li>`).join("");
   const evidence = (s.evidence || []).length ? `

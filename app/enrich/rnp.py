@@ -78,8 +78,10 @@ def fetch_by_inn(inn: str) -> dict:
     return parse(r.text, inn)
 
 
-def get_many(inns: list[str], live: bool = True, workers: int = 6, max_live: int = 30) -> dict[str, dict]:
-    """Кэш + параллельные онлайн-запросы. Сетевые ошибки не кэшируются и не всплывают наружу."""
+def get_many(inns: list[str], live: bool = True, workers: int = 1, max_live: int = 3) -> dict[str, dict]:
+    """Кэш + онлайн-запросы для отсутствующих. Сетевые ошибки не кэшируются и не всплывают наружу.
+    ЕИС просит не более одного автоматического запроса в минуту (robots.txt: Crawl-delay 60),
+    поэтому вживую проверяем не больше 3 поставщиков на один поиск, остальные — из кэша."""
     con = _db()
     out, known = {}, set()
     for i in range(0, len(inns), 900):

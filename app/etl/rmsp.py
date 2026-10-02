@@ -1,7 +1,7 @@
 """Реестр МСП ФНС (открытые данные, zip с XML) -> parquet.
 
-Оставляем: всех поставщиков из датасета + все МСП Санкт-Петербурга (78) и ЛО (47).
-Вторые нужны для расширения пула новыми компаниями.
+Оставляем: всех поставщиков из датасета + все МСП Санкт-Петербурга (78) и ЛО (47)
++ производителей и средних оптовиков из остальных регионов (для расширения пула новыми компаниями).
 
 Запуск: python -m app.etl.rmsp [путь_к_zip]
 """
@@ -30,6 +30,24 @@ def _init(known: set[str], zip_path) -> None:
     _known, ZIP_PATH = known, zip_path
 
 
+def _federal(doc: ET.Element, org) -> bool:
+    """Компании из других регионов, которые имеет смысл показывать заказчику из Петербурга:
+    производители (ОКВЭД 10–32) — малые и средние предприятия; оптовая торговля (46) — только средние.
+    Микропредприятия из других регионов не берём: их сотни тысяч, и поставлять в СПб они вряд ли будут."""
+    if org is None:
+        return False
+    cat = doc.get("КатСубМСП")
+    if cat not in ("2", "3"):
+        return False
+    m = doc.find("СвОКВЭД/СвОКВЭДОсн")
+    code = (m.get("КодОКВЭД") if m is not None else "") or ""
+    try:
+        cls = int(code.split(".")[0])
+    except ValueError:
+        return False
+    return 10 <= cls <= 32 or (cls == 46 and cat == "3")
+
+
 def _parse_doc(doc: ET.Element) -> dict | None:
     org, ip = doc.find("ОргВклМСП"), doc.find("ИПВклМСП")
     if org is not None:
@@ -48,8 +66,12 @@ def _parse_doc(doc: ET.Element) -> dict | None:
         return None
     mn = doc.find("СведМН")
     region = mn.get("КодРегион") if mn is not None else None
-    if inn not in _known and region not in KEEP_REGIONS:
+    if inn not in _known and region not in KEEP_REGIONS and not _federal(doc, org):
         return None
+    region_name = None
+    if mn is not None and mn.find("Регион") is not None:
+        r = mn.find("Регион")
+        region_name = f"{r.get('Наим', '')} {r.get('Тип', '')}".strip() or None
     city = None
     if mn is not None:
         for tag in ("Город", "НаселПункт", "Регион"):
@@ -72,6 +94,7 @@ def _parse_doc(doc: ET.Element) -> dict | None:
         "full_name": full_name,
         "ogrn": ogrn,
         "region_code": region,
+        "region_name": region_name,
         "city": city,
         "okved_main": okved_main,
         "okved_main_name": okved_main_name,

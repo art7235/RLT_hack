@@ -60,7 +60,7 @@ def _run_search(q: str, platform: str | None, region_only: bool, limit: int,
     res["external"] = []
     if external:
         known = {s["inn"] for s in res["suppliers"]}
-        res["external"] = store.find_new_companies(res["okpd2"], exclude=known)
+        res["external"] = store.find_new_companies(res["okpd2"], exclude=known, local_only=region_only)
     return res
 
 

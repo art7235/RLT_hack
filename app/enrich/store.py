@@ -74,8 +74,10 @@ class EnrichStore:
         self.rmsp = pd.DataFrame()
         if RMSP_PATH.exists():
             # строки в формате Arrow: в разы компактнее объектов Python; полное название не грузим
-            cols = ["inn", "name", "full_name", "ogrn", "region_code", "city", "okved_main", "okved_main_name", "okved_extra",
+            import pyarrow.parquet as pq
+            cols = ["inn", "name", "full_name", "ogrn", "region_code", "region_name", "city", "okved_main", "okved_main_name", "okved_extra",
                     "msp_category", "employees", "products", "msp_since", "in_dataset"]
+            cols = [c for c in cols if c in pq.read_schema(RMSP_PATH).names]  # старая выгрузка без region_name
             self.rmsp = pd.read_parquet(RMSP_PATH, columns=cols, dtype_backend="pyarrow").set_index("inn")
             self.rmsp["in_dataset"] = self.rmsp["in_dataset"].astype(bool)
         con = duckdb.connect(str(DB_PATH), read_only=True)
@@ -99,7 +101,6 @@ class EnrichStore:
         self.pool = pd.DataFrame()
         if not self.rmsp.empty:
             mask = (~self.rmsp["in_dataset"].to_numpy(bool)
-                    & self.rmsp["region_code"].astype(object).isin([SPB_REGION, LO_REGION]).to_numpy()
                     & np.asarray(self.rmsp.index.astype(object).str.len() == 10))  # новички: только юрлица
             # в памяти держим только поставщиков датасета и пул кандидатов-новичков
             self.rmsp = self.rmsp[mask | self.rmsp["in_dataset"].to_numpy(bool)]
@@ -175,6 +176,11 @@ class EnrichStore:
             "okved": {"code": r["okved_main"], "name": r.get("okved_main_name")} if r.get("okved_main") else None,
             "city": r.get("city"),
             "msp_category": r.get("msp_category"),
+            # размер — только по данным реестра МСП; «крупное» без подтверждающего источника не пишем
+            "size": {"микро": "micro", "малое": "small", "среднее": "medium"}.get(r.get("msp_category"), "unknown"),
+            "size_label": (f"{r['msp_category']} предприятие" if r.get("msp_category")
+                           else "размер не определён (нет в реестре МСП)"),
+            "region_name": REGION_NAMES.get(r.get("region_code")) or r.get("region_name"),
             "employees": None if emp is None or (isinstance(emp, float) and math.isnan(emp)) else int(emp),
             "phone": r.get("phone"),
             "email": r.get("email"),
@@ -227,6 +233,7 @@ class EnrichStore:
         emp = self.pool["employees"].astype("float64").fillna(0).to_numpy(dtype=float)
         self.pool_static = 0.25 * np.log1p(emp) + 0.2 * (self.pool["region_code"].astype(object).to_numpy() == SPB_REGION)
         self.pool_inns = self.pool.index.astype(object).to_numpy()
+        self.pool_local = self.pool["region_code"].astype(object).isin([SPB_REGION, LO_REGION]).to_numpy()
         log.info("pool index: %d companies, %d okved keys in %.1fs", len(self.pool), len(self.pool_extra), time.time() - t0)
 
     def _okved_mapping(self) -> dict[str, Counter]:
@@ -246,8 +253,10 @@ class EnrichStore:
         self._okved_by_class, self._mapping_built_at = m, time.time()
         return m
 
-    def find_new_companies(self, okpd: list[dict], exclude: set[str], limit: int = 10) -> list[dict]:
-        """Компании СПб/ЛО из реестра МСП, которых нет в истории закупок, но профиль совпадает."""
+    def find_new_companies(self, okpd: list[dict], exclude: set[str], limit: int = 10,
+                           local_only: bool = False) -> list[dict]:
+        """Компании из реестра МСП, которых нет в истории закупок, но вид деятельности совпадает с закупкой:
+        местные (СПб, ЛО) — для любых закупок; производители и оптовики из других регионов — только для товаров."""
         if not okpd:
             return []
         mapping = self._okved_mapping()
@@ -279,7 +288,7 @@ class EnrichStore:
                     scores[inn] += weight * share
                     why[inn].append(reason.format(ok=r.get("okved_main") or ok))
         if plans:
-            return self._new_from_pool(plans, exclude, limit)
+            return self._new_from_pool(plans, exclude, limit, federal=self._is_goods(okpd) and not local_only)
         match = dict(scores)  # сила совпадения вида деятельности до поправок на размер и регион
         for inn, r in recs.items():
             emp = r.get("employees") or 0
@@ -299,6 +308,14 @@ class EnrichStore:
                 break
         return self._new_cards(top, recs, why, match)
 
+    @staticmethod
+    def _is_goods(okpd: list[dict]) -> bool:
+        """Товар (классы ОКПД2 01–32) можно привезти из другого региона; услуги и работы — местные."""
+        try:
+            return bool(okpd) and int(okpd[0]["code"][:2]) <= 32
+        except ValueError:
+            return False
+
     def pool_scores(self, okpd: list[dict]) -> np.ndarray:
         """Баллы всех компаний пула по кодам ОКПД2 закупки (та же формула, что в выдаче; -1 — не подходит).
         Нужна для офлайн-проверки блока «Новые компании» (app/eval/new_companies_eval.py)."""
@@ -313,9 +330,13 @@ class EnrichStore:
             for ok, w in plan:
                 sc[self.pool_main.get(ok, [])] += w * share
                 sc[self.pool_extra.get(ok, [])] += 0.4 * w * share
-        return np.where(sc > 0, sc + self.pool_static, -1)
+        sc = np.where(sc > 0, sc + self.pool_static, -1)
+        if not self._is_goods(okpd):
+            sc[~self.pool_local] = -1
+        return sc
 
-    def _new_from_pool(self, plans: list[tuple[str, float, str]], exclude: set[str], limit: int) -> list[dict]:
+    def _new_from_pool(self, plans: list[tuple[str, float, str]], exclude: set[str], limit: int,
+                       federal: bool = True) -> list[dict]:
         """Офлайн-подбор по выгрузке реестра МСП: векторный скоринг по индексу ОКВЭД."""
         sc = np.zeros(len(self.pool))
         for ok, w, _ in plans:
@@ -323,8 +344,10 @@ class EnrichStore:
             sc[self.pool_extra.get(ok, [])] += 0.4 * w
         matched = sc > 0
         sc = np.where(matched, sc + self.pool_static, -1)
-        order = np.argsort(-sc)[: limit * 20]
-        top, per_okved = [], Counter()
+        if not federal:
+            sc[~self.pool_local] = -1
+        order = np.argsort(-sc)[: limit * 40]
+        top, per_okved, n_federal = [], Counter(), 0
         for p in order:
             if sc[p] <= 0:
                 break
@@ -334,6 +357,10 @@ class EnrichStore:
             ok = self.pool_main5[p]
             if per_okved[ok] >= max(2, int(limit * 0.6)):  # разнообразие видов деятельности
                 continue
+            if not self.pool_local[p]:
+                if n_federal >= max(1, int(limit * 0.4)):  # иногородних — не больше 40% списка
+                    continue
+                n_federal += 1
             top.append(p)
             per_okved[ok] += 1
             if len(top) >= limit:
@@ -367,7 +394,8 @@ class EnrichStore:
                 ["Вид деятельности совпадает с закупкой", round(min(25 * match.get(inn, 0), 50), 1)],
                 ["Размер компании", round(15 * min(math.log1p(emp) / math.log1p(100), 1), 1)],
                 ["Стаж в реестре МСП", 5.0 if year and year <= 2023 else 2.0 if year else 0.0],
-                ["Санкт-Петербург / ЛО", 5.0 if r.get("region_code") == SPB_REGION else 3.0],
+                ["Санкт-Петербург / ЛО", 5.0 if r.get("region_code") == SPB_REGION
+                 else 3.0 if r.get("region_code") == LO_REGION else 0.0],
                 ["Есть контакты в реестре", 5.0 if (r.get("phone") or r.get("email")) else 0.0],
             ]
             company = self._company(inn, r, None)
@@ -375,7 +403,10 @@ class EnrichStore:
             reasons = list(dict.fromkeys(why[inn]))[:2]
             if okved.get("code"):
                 reasons.insert(0, f"Основной вид деятельности: {okved['code']} {okved.get('name') or ''}".strip())
-            size = [REGION_NAMES.get(r.get("region_code"), "")]
+            local = r.get("region_code") in REGION_NAMES
+            size = [REGION_NAMES.get(r.get("region_code")) or r.get("region_name") or f"регион {r.get('region_code')}"]
+            if not local:
+                reasons.append("Компания из другого региона — показана, потому что товар можно поставить в Петербург")
             if r.get("msp_category"):
                 size.append(f"{r['msp_category']} предприятие")
             size.append(f"{emp} сотрудников" if emp else "численность не указана")
