@@ -263,6 +263,9 @@ def get_batch(bid: str) -> dict | None:
     return _BATCHES.get(bid)
 
 
+EXPORT_TOP = 10  # сколько поставщиков из истории на закупку идёт в файл (на экране можно раскрыть больше)
+
+
 def _rows(batch: dict) -> tuple[list[dict], list[dict]]:
     summary, recs = [], []
     for p in batch["procedures"]:
@@ -278,13 +281,13 @@ def _rows(batch: dict) -> tuple[list[dict], list[dict]]:
             "Уверенность подбора": {"high": "высокая", "medium": "средняя", "low": "низкая"}.get(
                 (r.get("confidence") or {}).get("level"), ""),
             "Замечание": (r.get("confidence") or {}).get("message", ""),
-            "Найдено из истории": len(hist),
+            "Найдено из истории": min(len(hist), EXPORT_TOP),
             "Новых компаний": len(new),
             "Топ-1": hist[0]["name"] if hist else "",
             "Топ-2": hist[1]["name"] if len(hist) > 1 else "",
             "Топ-3": hist[2]["name"] if len(hist) > 2 else "",
         })
-        for rank, s in enumerate(hist + new, 1):
+        for rank, s in enumerate(hist[:EXPORT_TOP] + new, 1):
             recs.append({
                 "Номер закупки": p["procedure_id"],
                 "Номер лота": p["input"].get("lot_id", ""),

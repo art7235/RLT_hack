@@ -26,7 +26,8 @@ const TAB_HINT = {
 };
 
 // результаты хранятся отдельно для каждого режима, чтобы вкладки не показывали чужую выдачу
-const state = { mode: "card", tab: "dataset", role: "", size: "", data: null, results: { card: null, quick: null, file: null }, batch: null };
+const FIRST = 3, MORE = 5;  // сначала показываем 3 лучших, кнопка добавляет ещё по 5
+const state = { mode: "card", tab: "dataset", role: "", size: "", visible: FIRST, files: [], data: null, results: { card: null, quick: null, file: null }, batch: null };
 
 // ------------------------------------------------------------------ init
 $("#examples").innerHTML = EXAMPLES.map((e) => `<button type="button">${esc(e)}</button>`).join("");
@@ -35,8 +36,8 @@ $("#examples").parentElement.addEventListener("click", (ev) => {
 });
 $$(".mode").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 $$(".tab").forEach((t) => t.addEventListener("click", () => setTab(t.dataset.tab)));
-$("#role-filter").addEventListener("change", (e) => { state.role = e.target.value; renderList(); });
-$("#size-filter").addEventListener("change", (e) => { state.size = e.target.value; renderList(); });
+$("#role-filter").addEventListener("change", (e) => { state.role = e.target.value; state.visible = FIRST; renderList(); });
+$("#size-filter").addEventListener("change", (e) => { state.size = e.target.value; state.visible = FIRST; renderList(); });
 $("#modal-close").addEventListener("click", closeModal);
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
@@ -71,6 +72,7 @@ function setMode(mode) {
 
 function setTab(tab) {
   state.tab = tab;
+  state.visible = FIRST;
   $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
   $("#tab-hint").textContent = TAB_HINT[tab];
   renderList();
@@ -119,6 +121,7 @@ function quickParams() {
   if (platform) p.set("platform", platform);
   if ($("#region_only").checked) p.set("region_only", "true");
   p.set("external", $("#external").checked ? "true" : "false");
+  p.set("limit", "40");
   return p;
 }
 async function runQuick() {
@@ -159,7 +162,7 @@ $("#card-form").addEventListener("submit", async (ev) => {
     return;
   }
   await request($("#card-form button[type=submit]"),
-    () => fetch("/api/procurement", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    () => fetch("/api/procurement?limit=40&n_new=15", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
     showResult);
 });
 $("#c-example").addEventListener("click", () => {
@@ -179,27 +182,39 @@ $("#c-clear").addEventListener("click", () => {
 
 // файл
 const drop = $("#drop");
-function setFile(files) {
-  const list = files && files.length ? [...files] : [];
-  drop.classList.toggle("has-file", list.length > 0);
-  $("#drop-title").textContent = list.length ? list.map((f) => f.name).join(" + ") : "Перетащите файл сюда или нажмите";
-  $("#drop-sub").textContent = list.length
-    ? (list.length > 1 ? "файлы будут связаны по номеру лота · " : "") + "нажмите «Обработать файл»"
-    : "Excel или CSV, до 300 закупок; можно два файла сразу: извещения и позиции";
+function renderFiles() {
+  drop.classList.toggle("has-file", state.files.length > 0);
+  $("#drop-title").textContent = state.files.length ? "Добавить ещё файл" : "Перетащите файл сюда или нажмите";
+  $("#drop-sub").textContent = state.files.length > 1 ? "файлы будут связаны по номеру лота или закупки"
+    : "Excel или CSV; выгрузку АИС ГЗ можно добавить двумя файлами: извещения и позиции";
+  $("#file-list").innerHTML = state.files.map((f, i) => `<span class="file-chip">${esc(f.name)}
+    <small>${(f.size / 1024).toFixed(0)} КБ</small><button type="button" data-rm="${i}" aria-label="Убрать файл">×</button></span>`).join("");
+  $$("[data-rm]", $("#file-list")).forEach((el) => el.addEventListener("click", () => {
+    state.files.splice(Number(el.dataset.rm), 1);
+    renderFiles();
+  }));
 }
-$("#f-file").addEventListener("change", (e) => setFile(e.target.files));
+function addFiles(list) {
+  for (const f of [...(list || [])]) {
+    if (!state.files.some((x) => x.name === f.name && x.size === f.size)) state.files.push(f);
+  }
+  renderFiles();
+}
+function setFile(files) {  // сброс списка (при загрузке страницы)
+  state.files = [];
+  addFiles(files);
+}
+$("#f-file").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", (e) => {
-  if (e.dataTransfer.files.length) { $("#f-file").files = e.dataTransfer.files; setFile(e.dataTransfer.files); }
-});
+drop.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
 $("#file-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const files = [...$("#f-file").files];
+  const files = state.files;
   if (!files.length) { $("#state").innerHTML = `<span class="error-box">Сначала выберите файл с закупками</span>`; return; }
   const fd = new FormData();
   files.forEach((f) => fd.append("file", f));
-  await request($("#file-form button[type=submit]"), () => fetch("/api/batch", { method: "POST", body: fd }), renderBatch);
+  await request($("#file-form button[type=submit]"), () => fetch("/api/batch?limit=25&n_new=5", { method: "POST", body: fd }), renderBatch);
 });
 
 function renderBatch(b) {
@@ -311,8 +326,20 @@ function renderList() {
       : state.tab === "external" ? "Новые компании не найдены" : "Поставщики не найдены — попробуйте уточнить название или добавить позиции"}</div>`;
     return;
   }
-  $("#list").innerHTML = items.map((s, i) => card(s, i + 1, d)).join("");
+  const shown = items.slice(0, state.visible);
+  const rest = items.length - shown.length;
+  $("#list").innerHTML = shown.map((s, i) => card(s, i + 1, d)).join("")
+    + (rest > 0 ? `<button type="button" class="btn btn-ghost more" id="more">Показать ещё ${Math.min(MORE, rest)} <small>осталось ${rest}, по убыванию балла</small></button>`
+      : items.length > FIRST ? `<p class="list-end">Показаны все ${items.length}</p>` : "");
   $$("[data-inn]", $("#list")).forEach((el) => el.addEventListener("click", () => openSupplier(el.dataset.inn)));
+  const more = $("#more");
+  if (more) more.addEventListener("click", () => {
+    const from = state.visible;
+    state.visible += MORE;
+    renderList();
+    const next = $$(".card", $("#list"))[from];
+    if (next) next.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 function initials(name) {

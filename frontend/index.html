@@ -90,15 +90,16 @@
           <div class="step"><b>1</b><div><strong>Скачайте шаблон</strong><span>Одна строка — одна позиция. У позиций одной закупки общий номер.</span>
             <div class="tpl"><a class="btn btn-ghost btn-sm" href="/api/template.xlsx">Excel</a><a class="btn btn-ghost btn-sm" href="/api/template.csv">CSV</a></div></div></div>
           <div class="step"><b>2</b><div><strong>Заполните</strong><span>Обязательно название закупки или позиций. ОКПД2, НМЦ, ИНН заказчика, площадка, СМП — по возможности.</span></div></div>
-          <div class="step"><b>3</b><div><strong>Загрузите</strong><span>Получите рейтинг по каждой закупке и выгрузку в Excel. Подходят и выгрузки АИС ГЗ: два файла — «извещения» и «позиции» — можно загрузить вместе, они свяжутся по номеру лота.</span></div></div>
+          <div class="step"><b>3</b><div><strong>Загрузите</strong><span>Один файл по шаблону или два файла выгрузки АИС ГЗ: «извещения» (названия закупок) и «позиции» (товары и коды). Добавляйте по одному или оба сразу — они свяжутся по номеру лота.</span></div></div>
         </div>
         <label class="drop" id="drop">
           <input type="file" id="f-file" accept=".xlsx,.xlsm,.csv,.txt" multiple>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5 M7.5 9.5L12 5l4.5 4.5 M5 19h14" /></svg>
           <strong id="drop-title">Перетащите файл сюда или нажмите</strong>
-          <span id="drop-sub">Excel или CSV, до 300 закупок; можно два файла сразу: извещения и позиции</span>
+          <span id="drop-sub">Excel или CSV; выгрузку АИС ГЗ можно добавить двумя файлами: извещения и позиции</span>
         </label>
       </div>
+      <div id="file-list" class="file-list"></div>
       <div class="actions">
         <button type="submit" class="btn btn-primary">Обработать файл</button>
       </div>
