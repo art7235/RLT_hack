@@ -179,23 +179,26 @@ $("#c-clear").addEventListener("click", () => {
 
 // файл
 const drop = $("#drop");
-function setFile(f) {
-  drop.classList.toggle("has-file", !!f);
-  $("#drop-title").textContent = f ? f.name : "Перетащите файл сюда или нажмите";
-  $("#drop-sub").textContent = f ? `${(f.size / 1024).toFixed(0)} КБ · нажмите «Обработать файл»` : "Excel или CSV, до 300 закупок";
+function setFile(files) {
+  const list = files && files.length ? [...files] : [];
+  drop.classList.toggle("has-file", list.length > 0);
+  $("#drop-title").textContent = list.length ? list.map((f) => f.name).join(" + ") : "Перетащите файл сюда или нажмите";
+  $("#drop-sub").textContent = list.length
+    ? (list.length > 1 ? "файлы будут связаны по номеру лота · " : "") + "нажмите «Обработать файл»"
+    : "Excel или CSV, до 300 закупок; можно два файла сразу: извещения и позиции";
 }
-$("#f-file").addEventListener("change", (e) => setFile(e.target.files[0]));
+$("#f-file").addEventListener("change", (e) => setFile(e.target.files));
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => {
-  if (e.dataTransfer.files.length) { $("#f-file").files = e.dataTransfer.files; setFile(e.dataTransfer.files[0]); }
+  if (e.dataTransfer.files.length) { $("#f-file").files = e.dataTransfer.files; setFile(e.dataTransfer.files); }
 });
 $("#file-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const f = $("#f-file").files[0];
-  if (!f) { $("#state").innerHTML = `<span class="error-box">Сначала выберите файл с закупками</span>`; return; }
+  const files = [...$("#f-file").files];
+  if (!files.length) { $("#state").innerHTML = `<span class="error-box">Сначала выберите файл с закупками</span>`; return; }
   const fd = new FormData();
-  fd.append("file", f);
+  files.forEach((f) => fd.append("file", f));
   await request($("#file-form button[type=submit]"), () => fetch("/api/batch", { method: "POST", body: fd }), renderBatch);
 });
 
@@ -208,7 +211,7 @@ function renderBatch(b) {
     if (p.input.price) meta.push("НМЦ " + fmtMoney(p.input.price));
     if (p.input.platform) meta.push(esc(p.input.platform));
     return `<tr data-i="${i}">
-      <td>${esc(p.procedure_id)}</td>
+      <td>${esc(p.procedure_id)}${p.input.lot_id && p.input.lot_id !== p.procedure_id ? `<div class="sub2">лот ${esc(p.input.lot_id)}</div>` : ""}</td>
       <td>${esc(p.input.text || p.input.items.slice(0, 2).join("; "))}<div class="sub2">${meta.join(" · ")}</div></td>
       <td>${(r.okpd2 || []).slice(0, 2).map((o) => esc(o.code)).join("<br>") || "—"}</td>
       <td class="sub2">${hist.slice(0, 3).map((s, k) => `${k + 1}. ${esc(s.name)}`).join("<br>") || "не найдено"}</td>

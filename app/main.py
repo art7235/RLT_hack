@@ -178,9 +178,11 @@ def template_xlsx():
 
 
 @app.post("/api/batch")
-async def batch(file: UploadFile = File(...), limit: int = Q(10, ge=1, le=50), n_new: int = Q(5, ge=0, le=20)) -> dict:
-    data = await file.read()
-    procs, errors = batch_mod.parse_procurements(data, file.filename or "")
+async def batch(file: list[UploadFile] = File(...), limit: int = Q(10, ge=1, le=50),
+                n_new: int = Q(5, ge=0, le=20)) -> dict:
+    """Один файл по шаблону или несколько файлов выгрузки (извещения + позиции) — склеиваются по номеру лота."""
+    files = [(await f.read(), f.filename or "") for f in file]
+    procs, errors = batch_mod.parse_procurements(files)
     live = len(procs) <= 5  # большие пакеты — только кэш, чтобы не упираться в лимиты ФНС
     out = []
     for p in procs:
@@ -190,7 +192,7 @@ async def batch(file: UploadFile = File(...), limit: int = Q(10, ge=1, le=50), n
             errors.append({"row": None, "procedure_id": p["procedure_id"], "problem": f"ошибка обработки: {e}"})
             continue
         out.append({"procedure_id": p["procedure_id"], "input": p, "result": res})
-    result = {"procedures": out, "errors": errors, "filename": file.filename}
+    result = {"procedures": out, "errors": errors, "filename": ", ".join(f.filename or "" for f in file)}
     result["batch_id"] = batch_mod.save_batch(result)
     return result
 

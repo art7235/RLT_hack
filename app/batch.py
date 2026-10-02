@@ -39,8 +39,9 @@ TEMPLATE_EXAMPLE = [
 
 # варианты названий колонок (сравнение без регистра, пробелов и знаков)
 ALIASES = {
-    "procedure_id": ["procedure_id", "lot_id", "id", "номер", "номер закупки", "номер процедуры", "reqnum",
-                     "реестровый номер", "№", "n", "номер лота"],
+    "procedure_id": ["procedure_id", "id", "номер", "номер закупки", "номер процедуры", "№", "n"],
+    "lot_id": ["lot_id", "номер лота", "лот", "id лота"],
+    "reqnum": ["reqnum", "реестровый номер", "номер извещения", "номер извещения еис"],
     "procedure_name": ["procedure_name", "subject", "name", "наименование закупки", "название закупки",
                        "предмет закупки", "объект закупки", "закупка"],
     "product_name": ["product_name", "item", "позиция", "наименование позиции", "наименование товара",
@@ -61,6 +62,7 @@ def _key(s: str) -> str:
 
 
 _ALIAS_INDEX = {_key(a): col for col, names in ALIASES.items() for a in names}
+_SILENT = {"customer kpp", "кпп заказчика"}  # колонки выгрузки АИС ГЗ, которые нам не нужны — без замечания
 
 
 # ------------------------------------------------------------------ template
@@ -141,35 +143,71 @@ def _platform(v: str) -> str | None:
     return None
 
 
-def parse_procurements(data: bytes, filename: str = "", max_procedures: int = 300) -> tuple[list[dict], list[dict]]:
-    """Файл -> (список закупок, список проблем). Закупка = dict с полями Query."""
-    errors: list[dict] = []
-    try:
-        df = _read_table(data, filename)
-    except Exception as e:  # noqa: BLE001 — любая ошибка чтения файла идёт пользователю как проблема
-        return [], [{"row": None, "procedure_id": None, "problem": f"не удалось прочитать файл: {e}"}]
-
+def _normalize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Приводит названия колонок к нашим; возвращает таблицу и список нераспознанных колонок."""
     mapping, unknown = {}, []
     for c in df.columns:
         col = _ALIAS_INDEX.get(_key(c))
         if col and col not in mapping.values():
             mapping[c] = col
-        else:
-            unknown.append(str(c))
+        elif not col and _key(c) not in _SILENT:
+            unknown.append(str(c))  # второй вариант уже распознанной колонки (subject при procedure_name) молча пропускаем
     df = df.rename(columns=mapping)[[c for c in mapping.values()]]
-    if unknown:
-        errors.append({"row": None, "procedure_id": None, "problem": "колонки не распознаны и пропущены: "
-                       + ", ".join(unknown[:10])})
+    df = df.fillna("").astype(str).apply(lambda x: x.str.strip())
+    return df[(df != "").any(axis=1)], unknown
+
+
+def _merge(tables: list[pd.DataFrame]) -> pd.DataFrame:
+    """Несколько файлов (например, «извещения» и «позиции» из выгрузки АИС ГЗ) склеиваем по номеру лота
+    или номеру закупки. Если общего номера нет — просто ставим строки друг за другом."""
+    if len(tables) == 1:
+        return tables[0]
+    key = next((k for k in ("lot_id", "procedure_id") if all(k in t.columns for t in tables)), None)
+    if key is None:
+        return pd.concat(tables, ignore_index=True).fillna("")
+    items = [t for t in tables if "product_name" in t.columns]
+    heads = [t for t in tables if "product_name" not in t.columns]
+    if not items or not heads:
+        return pd.concat(tables, ignore_index=True).fillna("")
+    head = pd.concat(heads, ignore_index=True).drop_duplicates(key)
+    body = pd.concat(items, ignore_index=True)
+    body = body[[c for c in body.columns if c == key or c not in head.columns]]
+    return body.merge(head, on=key, how="outer").fillna("")
+
+
+def parse_procurements(data, filename: str = "", max_procedures: int = 300) -> tuple[list[dict], list[dict]]:
+    """Файл или несколько файлов -> (список закупок, список проблем). Закупка = dict с полями Query.
+    data: bytes одного файла или список пар (bytes, имя файла)."""
+    files = data if isinstance(data, list) else [(data, filename)]
+    errors: list[dict] = []
+    tables = []
+    for raw, name in files:
+        try:
+            t, unknown = _normalize(_read_table(raw, name))
+        except Exception as e:  # noqa: BLE001 — любая ошибка чтения файла идёт пользователю как проблема
+            errors.append({"row": None, "procedure_id": None, "problem": f"не удалось прочитать файл {name}: {e}"})
+            continue
+        if unknown:
+            errors.append({"row": None, "procedure_id": None,
+                           "problem": f"{name}: колонки не распознаны и пропущены: " + ", ".join(unknown[:10])})
+        if len(t):
+            tables.append(t)
+    if not tables:
+        return [], errors or [{"row": None, "procedure_id": None, "problem": "в файле нет данных"}]
+    df = _merge(tables)
+    if len(files) > 1 and len(tables) > 1:
+        linked = "по номеру лота" if all("lot_id" in t.columns for t in tables) else "по номеру закупки"
+        errors.append({"row": None, "procedure_id": None,
+                       "problem": f"загружено файлов: {len(tables)}, строки связаны {linked}"})
     if "procedure_name" not in df.columns and "product_name" not in df.columns:
         errors.append({"row": None, "procedure_id": None,
                        "problem": "нет ни названия закупки, ни названий позиций — искать не по чему"})
         return [], errors
-    df = df.fillna("").astype(str).apply(lambda s: s.str.strip())
-    df = df[(df != "").any(axis=1)]
 
     groups: "OrderedDict[str, list]" = OrderedDict()
     for i, row in df.iterrows():
-        pid = row.get("procedure_id", "") or row.get("procedure_name", "") or f"строка {i + 2}"
+        pid = (row.get("lot_id", "") or row.get("procedure_id", "") or row.get("procedure_name", "")
+               or f"строка {i + 2}")
         groups.setdefault(pid, []).append((i, row))
 
     procs = []
@@ -191,7 +229,9 @@ def parse_procurements(data: bytes, filename: str = "", max_procedures: int = 30
             errors.append({"row": rows[0][0] + 2, "procedure_id": pid,
                            "problem": f"некорректные коды ОКПД2 ({', '.join(bad_codes[:3])}) — определим по названию"})
         procs.append({
-            "procedure_id": pid,
+            "procedure_id": first.get("procedure_id", "") or pid,
+            "lot_id": first.get("lot_id", ""),
+            "reqnum": first.get("reqnum", ""),
             "text": name,
             "items": [x for x in items if x],
             "okpd_codes": [c if re.match(r"^\d{2}(\.\d+)*$", c or "") else "" for c in codes],
@@ -230,6 +270,7 @@ def _rows(batch: dict) -> tuple[list[dict], list[dict]]:
         hist, new = r.get("suppliers", []), r.get("external", [])
         summary.append({
             "Номер закупки": p["procedure_id"],
+            "Номер лота": p["input"].get("lot_id", ""),
             "Наименование": p["input"]["text"] or "; ".join(p["input"]["items"][:3]),
             "Позиций": len(p["input"]["items"]),
             "ОКПД2": ", ".join(o["code"] for o in r.get("okpd2", [])[:3]),
@@ -246,6 +287,7 @@ def _rows(batch: dict) -> tuple[list[dict], list[dict]]:
         for rank, s in enumerate(hist + new, 1):
             recs.append({
                 "Номер закупки": p["procedure_id"],
+                "Номер лота": p["input"].get("lot_id", ""),
                 "Место": rank,
                 "ИНН": s["inn"],
                 "Название": s.get("name"),
