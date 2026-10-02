@@ -396,6 +396,7 @@ function card(s, rank, d) {
         ${evidence}
       </div>
       ${factors || points ? `<div class="factors"><h4>Из чего сложился балл</h4>${factors || points}
+        ${s.penalty ? `<div class="factor"><span class="chk bad">${esc(s.penalty.label)}</span><div></div><b class="chk bad">${Number(s.penalty.points).toFixed(1)}</b></div>` : ""}
         ${points ? `<p class="note">У новых компаний балл не выше 80: истории закупок нет.</p>` : ""}</div>` : ""}
     </div>
   </article>`;

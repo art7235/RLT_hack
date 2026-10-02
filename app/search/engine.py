@@ -232,7 +232,7 @@ class SearchEngine:
 
     def predict_okpd(self, terms: list[str], pos: np.ndarray, sims: np.ndarray,
                      intent: str | None = None, qweights: dict[str, float] | None = None) -> list[dict]:
-        """kNN по позициям ТРУ; если позиции не нашлись — голосование похожих лотов."""
+        """Код ОКПД2 запроса: голосуют ближайшие позиции ТРУ и похожие закупки, поровну."""
         votes: dict[str, float] = defaultdict(float)
         best_item: dict[str, tuple[float, str]] = {}
         idx, w = self._query_vector(terms, self.item_vocab, self.item_idf, qweights)
@@ -246,11 +246,20 @@ class SearchEngine:
                     votes[c] += s_ ** 3 * math.log1p(self.item_n[i])
                     if c not in best_item or s_ > best_item[c][0]:
                         best_item[c] = (s_, self.item_name[i])
-        if not votes:
-            for p, s_ in zip(pos[:OKPD_VOTE_LOTS], sims[:OKPD_VOTE_LOTS]):
-                codes = set(self._lot_codes(p))
-                for c in codes:
-                    votes[c] += float(s_) ** 2 / len(codes)
+        # Второй голос — похожие закупки целиком. Позиции отражают разнообразие названий («питание на
+        # соревнованиях» в десятке вариантов), закупки — что реально покупают чаще («услуги столовых»).
+        # Берём оба источника поровну.
+        lot_votes: dict[str, float] = defaultdict(float)
+        for p, s_ in zip(pos[:OKPD_VOTE_LOTS], sims[:OKPD_VOTE_LOTS]):
+            codes = set(self._lot_codes(p))
+            for c in codes:
+                lot_votes[c] += float(s_) ** 2 / len(codes)
+        ti, tl = sum(votes.values()), sum(lot_votes.values())
+        if ti and tl:
+            votes = defaultdict(float, {c: 0.5 * votes.get(c, 0.0) / ti + 0.5 * lot_votes.get(c, 0.0) / tl
+                                        for c in set(votes) | set(lot_votes)})
+        elif tl:
+            votes = lot_votes
         if not votes:
             return []
         if intent:  # тип закупки (товар/услуга) усиливает коды соответствующего раздела ОКПД2
