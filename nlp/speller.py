@@ -1,27 +1,4 @@
-"""Исправление поисковых запросов: раскладка, опечатки, бренды, лемматизация.
-
-Публичный API (совместим с первой версией):
-    fix_layout(word)     -> str
-    correct_word(word)   -> str
-    lemmatize(word)      -> str
-    correct_query(text)  -> dict   (original, corrected, was_corrected, changes, tokens, lemmas)
-
-Дополнительно:
-    correct_tokens(text) -> (tokens, changes_with_reason)   — для объяснимости
-    pos_tag(word)        -> str    — часть речи pymorphy3 (NOUN, ADJF, ...)
-
-Работает полностью офлайн: словарь data/nlp/vocab.json + pymorphy3 + rapidfuzz.
-
-Что изменено относительно v1 (см. README_speller.md, раздел «Ревью»):
-  * раскладка исправляется ДО токенизации: клавиши ; , . [ ] ' ` < > — это
-    русские ж б ю х ъ э ё Б Ю, токенизатор их выкидывал («ve;crjq» → «ve crjq»);
-  * скоринг — расстояние Дамерау–Левенштейна (перестановки = 1 правка)
-    + бонус за log-частоту вместо «окна ±12 по fuzz.ratio, а дальше самое частое»,
-    из-за которого «ноутбк» → «ноутбука», «ремнт» → «ремонту»;
-  * корректные слова русского языка, которых нет в словаре закупок,
-    больше не «исправляются» («снегоуборка» → «снегоуборщика» — было);
-  * бренды кириллицей → латиница («леново» → lenovo, «рз» → hp).
-"""
+"""Исправление поисковых запросов: раскладка, опечатки, бренды, лемматизация."""
 from __future__ import annotations
 
 import json
@@ -38,10 +15,10 @@ from nlp.tokenize import normalize, tokenize
 ROOT = Path(__file__).resolve().parents[1]
 VOCAB_PATH = ROOT / "data" / "nlp" / "vocab.json"
 
-MIN_CORRECT_LEN = 4        # слова короче не исправляем
-MIN_CAND_FREQ = 3          # кандидат-исправление должен встречаться хотя бы столько раз
-FREQ_BONUS = 0.35          # вес log10(частоты) в стоимости кандидата
-MAX_COST = 1.0             # кандидат принимается, если distance - bonus <= MAX_COST
+MIN_CORRECT_LEN = 4
+MIN_CAND_FREQ = 3
+FREQ_BONUS = 0.35
+MAX_COST = 1.0
 
 
 def max_edits(n: int) -> int:
@@ -57,15 +34,12 @@ _HAS_DIGIT = re.compile(r"\d")
 _CYR = re.compile(r"[а-яё]")
 _LAT = re.compile(r"[a-z]")
 
-# Полная раскладка QWERTY -> ЙЦУКЕН, включая клавиши-знаки и Shift-варианты.
 _EN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`{}:\"<>~"
 _RU = "йцукенгшщзхъфывапролджэячсмитьбюёхъжэбюё"
 _EN2RU = str.maketrans(_EN, _RU)
 _RU2EN = str.maketrans(_RU[:33], _EN[:33])
-# «слово» в латинской раскладке: буквы + клавиши, которые на ЙЦУКЕН дают буквы
 _LAYOUT_WORD = re.compile(r"[a-z;',.\[\]`{}:\"<>~]+")
 
-# Бренды и марки, которые пишут кириллицей. Ключ — как пишут, значение — как в данных.
 BRANDS: dict[str, str] = {
     "леново": "lenovo", "ленова": "lenovo", "самсунг": "samsung", "самсуг": "samsung",
     "кэнон": "canon", "канон": "canon", "кенон": "canon", "ксерокс": "xerox",
@@ -83,10 +57,9 @@ BRANDS: dict[str, str] = {
     "касперский": "kaspersky", "айфон": "iphone", "эппл": "apple", "эпл": "apple",
 }
 
-# ---------------------------------------------------------------- ленивое состояние
 _VOCAB: dict[str, int] | None = None
-_BUCKETS: dict[tuple[str, int], list[str]] | None = None   # (первая буква, длина) -> слова
-_BY_LEN: dict[int, list[str]] | None = None                # длина -> слова
+_BUCKETS: dict[tuple[str, int], list[str]] | None = None
+_BY_LEN: dict[int, list[str]] | None = None
 _MORPH = None
 
 
@@ -102,7 +75,6 @@ def _load_vocab() -> dict[str, int]:
         buckets: dict[tuple[str, int], list[str]] = {}
         by_len: dict[int, list[str]] = {}
         for w, c in vocab.items():
-            # в кандидаты на исправление не берём слова с цифрами и редкий мусор
             if c < MIN_CAND_FREQ or _HAS_DIGIT.search(w):
                 continue
             n = len(w)
@@ -137,19 +109,17 @@ def _freq(word: str) -> int:
     return _load_vocab().get(word, 0)
 
 
-# ---------------------------------------------------------------- раскладка
 def _layout_en2ru(chunk: str) -> str | None:
     """Пробует прочитать латинский кусок как набранный в английской раскладке."""
     vocab = _load_vocab()
     low = chunk.lower()
-    if low in vocab or low in BRANDS.values():      # hp, canon, usb — не трогаем
+    if low in vocab or low in BRANDS.values():
         return None
     ru = low.translate(_EN2RU)
     if ru == low or _LAT.search(ru):
         return None
     if ru in vocab or _is_known_russian(ru):
         return ru
-    # опечатка + раскладка: «ghbynthf» -> «принтера» не нужен, а «ghbyntth» -> «принтеер»
     if len(ru) >= 5:
         fixed = correct_word(ru)
         if fixed != ru and DamerauLevenshtein.distance(ru, fixed) <= 1:
@@ -190,7 +160,6 @@ def _fix_layout_text(text: str) -> tuple[str, list[dict]]:
             return chunk
         ru = _layout_en2ru(chunk.strip(".,;:"))
         if ru is None:
-            # знаки по краям могли быть обычной пунктуацией: «ghbynth,» -> «принтер,»
             core = chunk.strip(".,;:")
             ru = _layout_en2ru(core) if core != chunk else None
             if ru is None:
@@ -198,12 +167,10 @@ def _fix_layout_text(text: str) -> tuple[str, list[dict]]:
         changes.append({"from": chunk.lower(), "to": ru, "reason": "раскладка"})
         return " " + ru + " "
 
-    # не трогаем куски, приклеенные к цифрам/кириллице: «a4», «hp-laserjet» и т.п.
     out = re.sub(r"(?<![0-9а-яё])[A-Za-z;',.\[\]`{}:\"<>~]+(?![0-9а-яё])", repl, text)
     return out, changes
 
 
-# латинские буквы, похожие на русские (их часто путают в «а4», «аи-92», «ввгнг»)
 _HOMO = str.maketrans("aeopcxykmthb", "аеорсхукмтнв")
 
 
@@ -223,8 +190,7 @@ def _fix_mixed(tok: str) -> tuple[str, str] | None:
 
 
 def canon_token(tok: str) -> str:
-    """Канонизация без исправления опечаток — для индексации текстов датасета
-    (чтобы «a4» латиницей в данных и «а4» в запросе совпали)."""
+    """Канонизация без исправления опечаток — для индексации текстов датасета"""
     if _LAT.search(tok) and _CYR.search(tok) or (_LAT.search(tok) and _HAS_DIGIT.search(tok)):
         homo = tok.translate(_HOMO)
         if not _LAT.search(homo):
@@ -232,7 +198,6 @@ def canon_token(tok: str) -> str:
     return tok
 
 
-# ---------------------------------------------------------------- опечатки
 def _best(word: str, candidates: list[str], vocab: dict[str, int]) -> tuple[str | None, float]:
     """Лучший кандидат по стоимости: DL-расстояние - FREQ_BONUS*log10(частота)."""
     if not candidates:
@@ -247,10 +212,8 @@ def _best(word: str, candidates: list[str], vocab: dict[str, int]) -> tuple[str 
         if dist == 0:
             return cand, -1.0
         cost = dist - FREQ_BONUS * math.log10(vocab.get(cand, 1))
-        # при равной стоимости — короче правка, потом частота
         if cost < best_cost:
             best, best_cost = cand, cost
-    # редкий кандидат при максимальной правке — слишком рискованно
     if best is not None and best_cost <= MAX_COST:
         return best, best_cost
     return None, math.inf
@@ -266,24 +229,21 @@ def correct_word(word: str) -> str:
         return word
     if _is_numericish(word) or len(word) < MIN_CORRECT_LEN:
         return word
-    # нормальное русское слово, которого просто нет в закупках, — не трогаем
     if _is_known_russian(word):
         return word
 
     n, first = len(word), word[0]
     k = max_edits(n)
 
-    # 1) та же первая буква (самый частый случай опечатки)
     cands: list[str] = []
     for L in range(n - k, n + k + 1):
-        cands.extend(_BUCKETS.get((first, L), ()))           # type: ignore[union-attr]
+        cands.extend(_BUCKETS.get((first, L), ()))  # type: ignore[union-attr]
     hit, cost = _best(word, cands, vocab)
 
-    # 2) ошибка в первой букве: все слова длины ±1, принимаем только уверенный вариант
     if hit is None or cost > 0:
         cands = []
         for L in range(n - 1, n + 2):
-            cands.extend(_BY_LEN.get(L, ()))                 # type: ignore[union-attr]
+            cands.extend(_BY_LEN.get(L, ()))  # type: ignore[union-attr]
         hit2, cost2 = _best(word, cands, vocab)
         if hit2 is not None and cost2 < cost - 0.5:
             hit, cost = hit2, cost2
@@ -291,21 +251,17 @@ def correct_word(word: str) -> str:
     return hit or word
 
 
-# ---------------------------------------------------------------- лемматизация
 @lru_cache(maxsize=200_000)
 def lemmatize(word: str) -> str:
     if not word or _is_numericish(word) or not _CYR.search(word):
-        return word          # латиницу и токены с цифрами не лемматизируем
+        return word
     parses = _get_morph().parse(word)
     if not _is_known_russian(word):
-        # для незнакомых слов pymorphy угадывает по окончанию: «клининг» -> «клининга»,
-        # «скуд» -> «скуда». Если среди разборов есть само слово как начальная форма
-        # или угаданная лемма в закупках встречается реже самого слова — оставляем слово.
         if any(p.normal_form == word for p in parses):
             return word
         vocab = _load_vocab()
         if len(word) <= 5 and vocab.get(parses[0].normal_form, 0) < vocab.get(word, 0):
-            return word         # короткие аббревиатуры: скуд, соуэ, жбо
+            return word
     return parses[0].normal_form
 
 
@@ -321,12 +277,7 @@ def _agree(adj, noun) -> bool:
 
 
 def lemmatize_tokens(tokens: list[str]) -> tuple[list[str], list[str]]:
-    """Леммы и части речи с учётом контекста.
-
-    pymorphy3 разбирает слово изолированно: «горячего питания» -> «горячее» (сущ.),
-    «столовая посуда» -> «столовая» (сущ.). Если у слова есть разбор-прилагательное,
-    согласованное со следующим существительным, берём его.
-    """
+    """Леммы и части речи с учётом контекста."""
     lemmas = [lemmatize(t) for t in tokens]
     tags = [pos_tag(t) for t in tokens]
     morph = None
@@ -357,7 +308,6 @@ def pos_tag(word: str) -> str:
     return str(_get_morph().parse(word)[0].tag.POS or "UNKN")
 
 
-# ---------------------------------------------------------------- запрос целиком
 def correct_tokens(text: str) -> tuple[list[str], list[dict]]:
     """Токены исправленного запроса + список правок с причиной (раскладка/опечатка/бренд)."""
     _load_vocab()

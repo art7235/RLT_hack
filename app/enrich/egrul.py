@@ -1,8 +1,4 @@
-"""ЕГРЮЛ/ЕГРИП (egrul.nalog.ru): название, ОГРН, регион, руководитель, статус по ИНН.
-
-Кэш в SQLite (ENRICH_DB). Вызывается для ИНН, которых нет в реестре МСП.
-Массовый прогон: python -m app.enrich.egrul [limit]
-"""
+"""ЕГРЮЛ/ЕГРИП (egrul.nalog.ru): название, ОГРН, регион, руководитель, статус по ИНН."""
 from __future__ import annotations
 
 import json
@@ -20,7 +16,7 @@ HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Referer": "https://egrul.nalog.ru/index.html",
 }
-MIN_INTERVAL = 0.4  # сек между запросами, чтобы не словить капчу
+MIN_INTERVAL = 0.4
 
 
 def _db() -> sqlite3.Connection:
@@ -32,7 +28,6 @@ def _db() -> sqlite3.Connection:
 
 class Egrul:
     def __init__(self) -> None:
-        # trust_env=False: системный прокси Windows ломает SSL у Python
         self.client = httpx.Client(trust_env=False, timeout=20, headers=HEADERS, follow_redirects=True)
         self.client.get(URL + "index.html")
         self._last = 0.0
@@ -98,7 +93,7 @@ def fetch_many(inns: list[str], log_every: int = 100) -> None:
     for n, inn in enumerate(todo, 1):
         try:
             rec = eg.fetch(inn)
-        except Exception as e:  # капча / сеть — пауза и новая сессия
+        except Exception as e:
             print(f"  {inn}: {e}; pause 30s")
             time.sleep(30)
             for _ in range(10):
@@ -125,7 +120,6 @@ if __name__ == "__main__":
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
     con = duckdb.connect(str(DB_PATH), read_only=True)
     rmsp = DATA_DIR / "ext" / "rmsp.parquet"
-    # сначала самые активные; если реестр МСП уже разобран — только тех, кого в нём нет
     sql = "SELECT inn FROM supplier_profile"
     if rmsp.exists():
         sql += f" WHERE inn NOT IN (SELECT inn FROM read_parquet('{rmsp.as_posix()}'))"

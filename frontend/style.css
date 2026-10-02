@@ -79,7 +79,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .hidden { display: none !important; }
 em { font-style: normal; }
 
-/* ---------- первый экран */
 .hero { position: relative; isolation: isolate; overflow: hidden; background: linear-gradient(118deg, var(--hero-1), var(--hero-2)); padding: 0 0 38px; }
 .hero::before { content: ""; position: absolute; inset: 0; z-index: -2; background: radial-gradient(circle at 82% 9%, var(--accent-peach), transparent 32%), radial-gradient(circle at 12% 53%, var(--accent-mint), transparent 39%); opacity: .38; }
 .cityline { position: absolute; z-index: -1; right: 0; top: 95px; width: 100%; height: 280px; color: var(--skyline); fill: var(--skyline); opacity: .14; pointer-events: none; }
@@ -140,7 +139,6 @@ em { font-style: normal; }
 .btn-text:hover { color: var(--text); }
 .btn-sm { padding: 7px 14px; font-size: 14px; }
 
-/* файл */
 .file-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .file-steps { display: grid; gap: 14px; align-content: start; }
 .step { display: flex; gap: 12px; }
@@ -166,7 +164,6 @@ em { font-style: normal; }
 .more small { font-weight: 400; color: var(--muted); font-size: 12.5px; }
 .list-end { text-align: center; color: var(--muted); font-size: 13.5px; margin: 4px 0 0; }
 
-/* быстрый поиск */
 .search-row { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--border); border-radius: 12px; padding: 5px 5px 5px 14px; }
 .search-row:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .search-ico { color: var(--muted); width: 20px; height: 20px; }
@@ -179,7 +176,6 @@ em { font-style: normal; }
 .examples button { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 13px; font: inherit; font-size: 13.5px; cursor: pointer; }
 .examples button:hover { border-color: var(--primary); color: var(--primary); }
 
-/* ---------- состояние, сводка пакета */
 .state { text-align: center; color: var(--muted); }
 .state:not(:empty) { padding: 44px 0; }
 .batch-progress { max-width: 360px; height: 8px; margin: 14px auto 0; background: var(--border); }
@@ -209,7 +205,6 @@ em { font-style: normal; }
 .batch-errors { margin-top: 12px; background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 12px 16px; font-size: 13.5px; }
 .batch-errors ul { margin: 6px 0 0; padding-left: 18px; }
 
-/* ---------- результат */
 .conf { display: flex; flex-direction: column; gap: 2px; border-radius: var(--radius); padding: 14px 18px; margin: 26px 0 -10px; font-size: 14.5px; border: 1px solid transparent; }
 .conf b { font-size: 15px; }
 .conf-medium { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
@@ -315,7 +310,6 @@ details.evidence summary { cursor: pointer; color: var(--primary); font-size: 13
 .won { color: var(--good); font-weight: 600; }
 .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); padding: 34px; text-align: center; color: var(--muted); }
 
-/* ---------- как это работает, подвал */
 .about { margin: 30px 0 40px; }
 .about h2 { font-size: 20px; margin: 0 0 14px; }
 .about-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
@@ -324,7 +318,6 @@ details.evidence summary { cursor: pointer; color: var(--primary); font-size: 13
 .about-grid b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
 .foot { border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; padding: 18px 0 26px; }
 
-/* ---------- карточка поставщика (модальное окно) */
 .modal { position: fixed; inset: 0; background: rgba(15, 27, 45, .5); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 10; }
 .modal-box { background: var(--surface); border-radius: 16px; max-width: 880px; width: 100%; padding: 24px 26px; position: relative; }
 .modal-close { position: absolute; right: 14px; top: 10px; border: 0; background: none; font-size: 28px; line-height: 1; color: var(--muted); cursor: pointer; }

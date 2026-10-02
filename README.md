@@ -79,7 +79,7 @@ uvicorn app.main:app --port 8000      # http://127.0.0.1:8000
 
 Блок «Новые компании» проверен отдельно (`python -m app.eval.new_companies_eval`): новички — 12.2% победителей 2025 года;
 блок в принципе может найти 29% из них (остальные — ИП или вне пула), в топ-10 попадает 1.1%, в топ-200 — 20%.
-Подробности и ограничения — в [docs/METHOD.md](docs/METHOD.md), простыми словами — [docs/SIMPLE.md](docs/SIMPLE.md),
+Подробности и ограничения — в [docs/METHOD.md](docs/METHOD.md),
 какие внешние источники проверены и почему часть не подошла — [docs/EXTERNAL_SOURCES.md](docs/EXTERNAL_SOURCES.md).
 
 ## Источники обогащения

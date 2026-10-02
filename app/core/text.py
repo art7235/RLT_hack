@@ -1,15 +1,9 @@
-"""Обработка текста для индекса и запроса.
-
-Индексатор и поиск обязаны использовать одну и ту же функцию doc_terms(),
-иначе леммы запроса не совпадут с леммами индекса.
-Если команда NLP положила data/nlp/stopwords.txt — он подхватывается автоматически.
-"""
+"""Обработка текста для индекса и запроса."""
 import re
 from functools import lru_cache
 
 from app.config import NLP_DICT_DIR
 
-# тот же токенизатор, что в nlp/tokenize.py у команды NLP
 _TOKEN = re.compile(r"[а-яa-z0-9]+(?:[-./][а-яa-z0-9]+)*")
 
 
@@ -21,14 +15,13 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN.findall(normalize(text))
 
 
-# --- шум в названиях закупок -------------------------------------------------
 _NOISE = [
-    re.compile(r"\(?\s*п\.?\s*\d+\s*ч\.?\s*\d+\s*ст\.?\s*\d+[^)]*\)?", re.I),  # (п.33 ч.1 ст.93 ...)
+    re.compile(r"\(?\s*п\.?\s*\d+\s*ч\.?\s*\d+\s*ст\.?\s*\d+[^)]*\)?", re.I),
     re.compile(r"\b\d{2,3}\s*-\s*фз\b", re.I),
     re.compile(r"федеральн\w*\s+закон\w*", re.I),
     re.compile(r"№\s*[\w/-]+", re.I),
-    re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b"),                  # даты
-    re.compile(r"\b(?:19|20)\d{2}\s*(?:г\.?|год\w*)?", re.I),      # годы
+    re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b"),
+    re.compile(r"\b(?:19|20)\d{2}\s*(?:г\.?|год\w*)?", re.I),
 ]
 
 
@@ -79,7 +72,6 @@ def _get_morph():
 
 @lru_cache(maxsize=500_000)
 def lemma(word: str) -> str:
-    # токены с цифрами и латиница — как есть (а4, аи-92, hp)
     if any(c.isdigit() for c in word) or not re.search("[а-я]", word):
         return word
     return _get_morph().parse(word)[0].normal_form.replace("ё", "е")
@@ -103,8 +95,7 @@ _INTENT = {"товар": "goods", "услуга": "services", "работа": "s
 
 
 def process_query(raw: str) -> dict:
-    """Обработка запроса модулем NLP команды (nlp/query.py: опечатки, ключевые слова, синонимы).
-    Если модуля нет или он упал — встроенная обработка."""
+    """Обработка запроса модулем NLP команды (nlp/query.py: опечатки, ключевые слова, синонимы)."""
     try:
         from nlp.query import process_query as nlp_process  # type: ignore
         res = nlp_process(raw)

@@ -1,11 +1,4 @@
-"""РНП — реестр недобросовестных поставщиков (zakupki.gov.ru, ЕИС).
-
-По ИНН возвращает записи реестра: действующие (поставщик сейчас в «чёрном списке») и исключённые (был раньше).
-Кэш в SQLite (ENRICH_DB). Сайт отдаёт сертификат Минцифры, которому не доверяют стандартные
-хранилища, поэтому verify=False (источник — официальный государственный портал).
-
-Массовый прогрев: python -m app.enrich.rnp [limit]
-"""
+"""РНП — реестр недобросовестных поставщиков (zakupki.gov.ru, ЕИС)."""
 from __future__ import annotations
 
 import json
@@ -51,7 +44,7 @@ def parse(html: str, inn: str) -> dict:
     for block in html.split("search-registry-entry-block")[1:]:
         parts = _text(block[:8000])
         if inn not in parts:
-            continue  # поиск по строке мог зацепить чужую запись
+            continue
         rec = {"law": next((x for x in parts[:5] if x.endswith("-ФЗ")), None), "number": None, "status": None,
                "name": None, "included": None, "excluded": None}
         for i, p in enumerate(parts):
@@ -79,9 +72,7 @@ def fetch_by_inn(inn: str) -> dict:
 
 
 def get_many(inns: list[str], live: bool = True, workers: int = 1, max_live: int = 3) -> dict[str, dict]:
-    """Кэш + онлайн-запросы для отсутствующих. Сетевые ошибки не кэшируются и не всплывают наружу.
-    ЕИС просит не более одного автоматического запроса в минуту (robots.txt: Crawl-delay 60),
-    поэтому вживую проверяем не больше 3 поставщиков на один поиск, остальные — из кэша."""
+    """Кэш + онлайн-запросы для отсутствующих. Сетевые ошибки не кэшируются и не всплывают наружу."""
     con = _db()
     out, known = {}, set()
     for i in range(0, len(inns), 900):
@@ -94,7 +85,7 @@ def get_many(inns: list[str], live: bool = True, workers: int = 1, max_live: int
         def one(inn):
             try:
                 return inn, fetch_by_inn(inn)
-            except Exception:  # noqa: BLE001 — недоступность ЕИС не должна ломать поиск
+            except Exception:  # noqa: BLE001
                 return inn, None
         with ThreadPoolExecutor(workers) as ex:
             results = list(ex.map(one, todo))

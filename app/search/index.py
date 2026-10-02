@@ -1,8 +1,4 @@
-"""TF-IDF индекс по лотам: предмет лота + позиции ТРУ.
-
-Строится один раз (python -m app.search.index), грузится в память при старте API.
-Позиции ТРУ чище, чем предмет (там часто заказчик/район), поэтому весим их выше.
-"""
+"""TF-IDF индекс по лотам: предмет лота + позиции ТРУ."""
 import pickle
 import time
 
@@ -14,7 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from app.config import DB_PATH, INDEX_DIR
 from app.core.text import doc_terms
 
-ITEMS_WEIGHT = 2  # позиции ТРУ повторяем дважды
+ITEMS_WEIGHT = 2
 MAX_ITEMS_CHARS = 3000
 
 
@@ -38,7 +34,7 @@ def build() -> None:
             print(f"[{time.time() - t0:6.1f}s] tokenized {i:,}")
 
     vec = TfidfVectorizer(
-        analyzer=lambda x: x,  # уже токенизировано
+        analyzer=lambda x: x,
         min_df=2,
         max_df=0.3,
         sublinear_tf=True,
@@ -47,7 +43,6 @@ def build() -> None:
     X = vec.fit_transform(docs).tocsr()
     print(f"[{time.time() - t0:6.1f}s] matrix {X.shape}, nnz={X.nnz:,}")
 
-    # храним транспонированную матрицу: по терму сразу получаем лоты (как инвертированный индекс)
     sparse.save_npz(INDEX_DIR / "tfidf_T.npz", X.T.tocsr())
     np.save(INDEX_DIR / "lot_ids.npy", lot_ids)
     with open(INDEX_DIR / "vectorizer.pkl", "wb") as f:

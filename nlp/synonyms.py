@@ -1,17 +1,4 @@
-"""Синонимы и расширение запроса для поиска по закупкам.
-
-Источники (оба в формате {"synonyms": [[...], ...], "narrower": {общее: [узкие...]}}):
-  data/nlp/synonyms_curated.json — ручной словарь (аббревиатуры, разговорные формы)
-  data/nlp/synonyms_mined.json   — добытый из датасета скриптом scripts/mine_synonyms.py
-                                   (пары «полное название (АББР)»), если файл есть
-
-Сопоставление идёт по ЛЕММАМ n-граммами (до 6 слов), жадно, самые длинные фразы первыми:
-«системы контроля и управления доступом» и «скуд» попадают в одну группу.
-
-Публичный API:
-    find_matches(lemmas)  -> [Match]           какие фразы словаря нашлись в запросе
-    expand(lemmas)        -> [dict]            варианты расширения с весами и причиной
-"""
+"""Синонимы и расширение запроса для поиска по закупкам."""
 from __future__ import annotations
 
 import json
@@ -27,10 +14,10 @@ CURATED = ROOT / "data" / "nlp" / "synonyms_curated.json"
 MINED = ROOT / "data" / "nlp" / "synonyms_mined.json"
 
 MAX_NGRAM = 6
-W_SYNONYM = 0.85       # вес равнозначной формулировки
-W_MINED = 0.75         # вес синонима, добытого из данных автоматически
-W_NARROWER = 0.5       # вес более узкого понятия («оргтехника» -> «принтер»)
-W_BROADER = 0.4        # вес более общего понятия («шприц» -> «медицинские расходные материалы»)
+W_SYNONYM = 0.85
+W_MINED = 0.75
+W_NARROWER = 0.5
+W_BROADER = 0.4
 
 
 Phrase = tuple[str, ...]
@@ -39,9 +26,9 @@ Phrase = tuple[str, ...]
 @dataclass(frozen=True)
 class Match:
     start: int
-    end: int            # не включительно
-    phrase: Phrase      # леммы найденной фразы
-    text: str           # исходная форма фразы из словаря
+    end: int
+    phrase: Phrase
+    text: str
 
 
 def _lem_phrase(text: str) -> Phrase:
@@ -50,7 +37,7 @@ def _lem_phrase(text: str) -> Phrase:
 
 class _Index:
     def __init__(self) -> None:
-        self.groups: list[list[tuple[Phrase, str, str]]] = []   # (леммы, текст, источник)
+        self.groups: list[list[tuple[Phrase, str, str]]] = []
         self.by_phrase: dict[Phrase, list[int]] = {}
         self.narrower: dict[Phrase, list[tuple[Phrase, str]]] = {}
         self.broader: dict[Phrase, list[tuple[Phrase, str]]] = {}
@@ -96,7 +83,6 @@ def _load_file(idx: _Index, path: Path, source: str) -> None:
         idx.add_group(group, source)
     for broad, narrow in data.get("narrower", {}).items():
         idx.add_narrower(broad, narrow)
-    # «общее понятие» тоже должно находиться в запросе, даже если у него нет синонимов
     for broad in data.get("narrower", {}):
         bp = _lem_phrase(broad)
         if bp not in idx.by_phrase:
@@ -129,13 +115,7 @@ def find_matches(lemmas: list[str]) -> list[Match]:
 
 
 def expand(lemmas: list[str], max_per_match: int = 8) -> list[dict]:
-    """Варианты расширения запроса.
-
-    Возвращает список:
-      {"matched": "скуд", "term": "система контроля и управления доступом",
-       "lemmas": [...], "kind": "synonym" | "narrower" | "broader", "source": "словарь" | "датасет",
-       "weight": 0.85}
-    """
+    """Варианты расширения запроса."""
     idx = get_index()
     out: list[dict] = []
     seen: set[Phrase] = set()

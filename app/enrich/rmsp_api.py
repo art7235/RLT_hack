@@ -1,10 +1,4 @@
-"""Онлайн-API реестра МСП (rmsp.nalog.ru): карточка по ИНН и расширенный поиск по ОКВЭД + региону.
-
-Даёт то, чего нет в датасете: название, основной ОКВЭД, телефон, email, категорию, численность, город.
-Всё кэшируется в SQLite (ENRICH_DB), повторные запросы не идут в сеть.
-
-Прогрев кэша для самых активных поставщиков: python -m app.enrich.rmsp_api [limit]
-"""
+"""Онлайн-API реестра МСП (rmsp.nalog.ru): карточка по ИНН и расширенный поиск по ОКВЭД + региону."""
 from __future__ import annotations
 
 import json
@@ -39,7 +33,6 @@ def _db() -> sqlite3.Connection:
 
 def _client() -> httpx.Client:
     if getattr(_local, "client", None) is None:
-        # trust_env=False: системный прокси Windows ломает SSL у Python
         _local.client = httpx.Client(trust_env=False, timeout=20, headers=HEADERS, follow_redirects=True)
     return _local.client
 

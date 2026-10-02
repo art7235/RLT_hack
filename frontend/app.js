@@ -25,12 +25,10 @@ const TAB_HINT = {
   external: "Компании из реестра МСП, которых нет в истории закупок, но вид деятельности подходит: местные — для любых закупок, производители и оптовики из других регионов — для товаров.",
 };
 
-// результаты хранятся отдельно для каждого режима, чтобы вкладки не показывали чужую выдачу
-const FIRST = 3, MORE = 5;  // сначала показываем 3 лучших, кнопка добавляет ещё по 5
+const FIRST = 3, MORE = 5;
 const state = { mode: "card", tab: "dataset", role: "", size: "", visible: FIRST, files: [], data: null, results: { card: null, quick: null, file: null }, batch: null,
-  rerun: { card: null, quick: null, file: null } };  // как повторить поиск текущего режима без слов, убранных пользователем
+  rerun: { card: null, quick: null, file: null } };
 
-// ------------------------------------------------------------------ init
 $("#examples").innerHTML = EXAMPLES.map((e) => `<button type="button">${esc(e)}</button>`).join("");
 $("#examples").parentElement.addEventListener("click", (ev) => {
   if (ev.target.tagName === "BUTTON") { $("#q").value = ev.target.textContent; runQuick(); }
@@ -47,8 +45,6 @@ fetch("/api/health").then((r) => r.json()).then((h) => {
   $("#health").textContent = `${fmtNum(h.lots)} закупок · ${fmtNum(h.suppliers)} поставщиков в базе`;
 }).catch(() => {});
 
-// При обновлении страницы браузер восстанавливает старый текст в полях — очищаем формы.
-// Ссылка вида ?q=... выполняется один раз, после чего запрос из адреса убирается.
 window.addEventListener("pageshow", () => {
   const q = new URLSearchParams(location.search).get("q");
   $$("form").forEach((f) => f.reset());
@@ -57,7 +53,6 @@ window.addEventListener("pageshow", () => {
   if (q) { $("#q").value = q; setMode("quick"); runQuick(); }
 });
 
-// ------------------------------------------------------------------ режимы
 function setMode(mode) {
   state.mode = mode;
   $$(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
@@ -79,7 +74,6 @@ function setTab(tab) {
   renderList();
 }
 
-// ------------------------------------------------------------------ запросы
 async function request(btn, doFetch, onOk) {
   btn.disabled = true;
   $("#state").innerHTML = `<div class="spinner"></div>Ищем похожие закупки и проверяем поставщиков по реестрам…`;
@@ -91,10 +85,10 @@ async function request(btn, doFetch, onOk) {
     const r = await doFetch();
     if (!r.ok) {
       let msg = r.statusText;
-      try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (_) { /* не JSON */ }
+      try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (_) { }
       throw new Error(msg);
     }
-    const data = await r.json();  // большой ответ читается секунды — индикатор убираем только после этого
+    const data = await r.json();
     $("#state").innerHTML = "";
     onOk(data);
   } catch (e) {
@@ -116,7 +110,6 @@ function showResult(data, scroll = true) {
   if (scroll) (state.mode === "file" ? $("#kpis") : $("#main")).scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// быстрый поиск
 function quickParams() {
   const p = new URLSearchParams({ q: $("#q").value.trim() });
   const platform = $("input[name=platform]:checked").value;
@@ -138,7 +131,6 @@ $("#form").addEventListener("submit", (ev) => { ev.preventDefault(); runQuick();
 $$("input[name=platform], #region_only, #external").forEach((el) =>
   el.addEventListener("change", () => { if ($("#q").value.trim() && state.results.quick) runQuick(); }));
 
-// карточка закупки
 const OKPD_RE = /^\d{2}(\.\d+)*$/;
 function parseItems(text) {
   const items = [], codes = [];
@@ -186,7 +178,6 @@ $("#c-clear").addEventListener("click", () => {
   $("#state").innerHTML = "";
 });
 
-// файл
 const drop = $("#drop");
 function renderFiles() {
   drop.classList.toggle("has-file", state.files.length > 0);
@@ -206,7 +197,7 @@ function addFiles(list) {
   }
   renderFiles();
 }
-function setFile(files) {  // сброс списка (при загрузке страницы)
+function setFile(files) {
   state.files = [];
   addFiles(files);
 }
@@ -220,30 +211,27 @@ $("#file-form").addEventListener("submit", async (ev) => {
   if (!files.length) { $("#state").innerHTML = `<span class="error-box">Сначала выберите файл с закупками</span>`; return; }
   const fd = new FormData();
   files.forEach((f) => fd.append("file", f));
-  // пакет считается десятки секунд — раз в полторы секунды спрашиваем сервер, сколько закупок уже готово
   const job = Math.random().toString(36).slice(2, 12);
   let active = true, total = 0;
   const timer = setInterval(async () => {
     try {
       const p = await (await fetch("/api/batch/progress/" + job)).json();
       if (!active || !(p.total || total)) return;
-      // сервер забывает задание, как только досчитал: дальше идёт только передача результата
       const ready = !p.total || p.done >= p.total;
       total = p.total || total;
       $("#state").innerHTML = `<div class="spinner"></div>${ready ? `Обработано закупок: ${total} из ${total}. Получаем результат…` : `Обработано закупок: ${p.done} из ${total}`}
         <div class="share batch-progress"><span style="width:${ready ? 100 : Math.round(p.done / total * 100)}%"></span></div>`;
-    } catch (_) { /* опрос прогресса не обязателен */ }
+    } catch (_) { }
   }, 1500);
   try {
     await request($("#file-form button[type=submit]"), () => fetch("/api/batch?limit=25&n_new=5&job=" + job, { method: "POST", body: fd }), renderBatch);
   } finally {
     active = false;
     clearInterval(timer);
-    if ($(".batch-progress", $("#state"))) $("#state").innerHTML = "";  // индикатор не должен остаться после результата
+    if ($(".batch-progress", $("#state"))) $("#state").innerHTML = "";
   }
 });
 
-// ячейка «Поставщики» в таблице пакета: сначала 3 лучших, кнопка в строке добавляет ещё по 5
 function batchSuppliers(hist, n) {
   if (!hist.length) return "не найдено";
   const rest = hist.length - Math.min(n, hist.length);
@@ -253,7 +241,6 @@ function batchSuppliers(hist, n) {
         ${n > FIRST ? `<button type="button" class="row-less">Свернуть</button>` : ""}</div>` : "");
 }
 
-// ячейки одной строки таблицы пакета; n — сколько поставщиков раскрыто
 function batchRow(p, n) {
   const r = p.result, hist = r.suppliers || [];
   const meta = [`${p.input.items.length} поз.`];
@@ -271,7 +258,7 @@ function batchRow(p, n) {
 
 function renderBatch(b) {
   state.batch = b;
-  const shown = b.procedures.map(() => FIRST);  // сколько поставщиков раскрыто в каждой строке
+  const shown = b.procedures.map(() => FIRST);
   const rows = b.procedures.map((p, i) => `<tr data-i="${i}">${batchRow(p, FIRST)}</tr>`).join("");
   const errs = (b.errors || []).length ? `<div class="batch-errors"><b>Замечания по файлу (${b.errors.length})</b><ul>${b.errors.map((e) =>
     `<li>${e.row ? "строка " + e.row + ": " : ""}${e.procedure_id ? "закупка " + esc(e.procedure_id) + " — " : ""}${esc(e.problem)}</li>`).join("")}</ul></div>` : "";
@@ -291,14 +278,13 @@ function renderBatch(b) {
   $$("tr[data-i]", $("#batch")).forEach((tr) => tr.addEventListener("click", (ev) => {
     const i = Number(tr.dataset.i);
     const more = ev.target.closest(".row-more"), less = ev.target.closest(".row-less");
-    if (more || less) {  // кнопки раскрывают и сворачивают список в строке, сама строка при этом не выбирается
+    if (more || less) {
       shown[i] = less ? FIRST : shown[i] + MORE;
       $(".batch-sup", tr).innerHTML = batchSuppliers(b.procedures[i].result.suppliers || [], shown[i]);
       return;
     }
     $$("tr", $("#batch")).forEach((x) => x.classList.remove("sel"));
     tr.classList.add("sel");
-    // повторный подбор этой закупки без слов, которые убрал пользователь; результат заменяет старый и в Excel
     state.rerun.file = async (exclude, btn) => {
       const p = b.procedures[i];
       await request(btn, () => fetch(`/api/procurement?limit=25&n_new=5&batch_id=${b.batch_id}&index=${i}`, {
@@ -319,7 +305,6 @@ function renderBatch(b) {
   $("#batch").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// ------------------------------------------------------------------ отрисовка результата
 function renderConfidence() {
   const c = state.data.confidence;
   const el = $("#conf");
@@ -345,7 +330,6 @@ function renderUnderstanding() {
   const d = state.data, q = d.query, pr = q.procurement;
   let html = `<p class="side-title">Как система поняла закупку</p>`;
   if (q.was_corrected) html += `<div class="corr">Исправили опечатки: <b>${esc(q.corrected)}</b></div>`;
-  // слово можно убрать из поиска нажатием; убранные показаны зачёркнутыми, повторное нажатие возвращает
   const excluded = q.excluded || [], canRerun = !!state.rerun[state.mode];
   const chip = (t, off) => canRerun
     ? `<button type="button" class="term${off ? " off" : ""}" data-term="${esc(t)}" title="${off ? "Вернуть слово в поиск" : "Убрать слово из поиска"}">${esc(t)}</button>`
@@ -383,7 +367,6 @@ function renderUnderstanding() {
     $$("button.term", $("#understanding")).forEach((el) => el.addEventListener("click", () => {
       el.classList.toggle("off");
       el.title = el.classList.contains("off") ? "Вернуть слово в поиск" : "Убрать слово из поиска";
-      // кнопка появляется, только если набор убранных слов отличается от того, с которым искали
       btn.classList.toggle("hidden", off().slice().sort().join(",") === excluded.slice().sort().join(","));
     }));
     btn.addEventListener("click", () => state.rerun[state.mode](off(), btn));
@@ -509,7 +492,6 @@ function card(s, rank, d) {
   </article>`;
 }
 
-// ------------------------------------------------------------------ карточка поставщика
 async function openSupplier(inn) {
   $("#modal-body").innerHTML = `<div class="spinner"></div>`;
   $("#modal").classList.remove("hidden");

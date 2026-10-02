@@ -1,17 +1,4 @@
-"""Оценка в целевом сценарии «по данным закупки».
-
-На вход системе даём полную карточку реальной закупки 2025 года (название, позиции, ОКПД2, заказчик, НМЦ,
-площадка, СМП), история — только 2024. Смотрим, попал ли фактический победитель в топ-10.
-
-Воспроизводимость: список тестовых закупок зафиксирован в tests/eval_lots.csv (детерминированный отбор
-по хэшу номера лота, без случайной выборки). Для метрик считаются 95%-интервалы (бутстреп).
-
-Сравниваем с бейзлайнами, у которых ТЕ ЖЕ входные данные:
-  - «топ по ОКПД2»: самые частые победители 2024 года по кодам ОКПД2 из спецификации;
-  - «заказчик + ОКПД2»: кто выигрывал у этого заказчика в этом классе ОКПД2, затем добор топом по коду.
-
-Запуск: python -m app.eval.procedure_eval [n_test=1000] [n_name_only=300]
-"""
+"""Оценка в целевом сценарии «по данным закупки»."""
 import json
 import pickle
 import sys
@@ -75,7 +62,6 @@ def main(n_test: int = 1000, n_name: int = 300) -> None:
     con = duckdb.connect(str(DB_PATH), read_only=True)
     e.profile, e.sokpd = _history_tables(con)
     qs = test_lots(con, n_test)
-    # бейзлайны: победы 2024 года по (заказчик, класс ОКПД2) и по коду
     cust_cls = defaultdict(lambda: defaultdict(int))
     for cust, cls, inn, w in con.execute(f"""
         SELECT l.customer_inn, substr(i.okpd2_code, 1, 5), p.inn, count(DISTINCT l.lot_id)
@@ -105,7 +91,6 @@ def main(n_test: int = 1000, n_name: int = 300) -> None:
         res["card_recall"] = len(parts & set(full)) / len(parts)
         if n < n_name:
             res["name"] = rank_of([s["inn"] for s in e.search(Query(text=row.subject, limit=K, before_date=SPLIT))["suppliers"]])
-        # бейзлайны на тех же входных данных
         codes8 = [c[:OKPD_LEVEL] for c in card["okpd_codes"] if c]
         top_code, seen = [], set()
         for c in dict.fromkeys(codes8):

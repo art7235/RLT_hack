@@ -1,7 +1,4 @@
-"""Прогрев кэшей обогащения для демо: прогоняет типовые запросы через запущенный API.
-
-python -m app.eval.prewarm [http://127.0.0.1:8000]
-"""
+"""Прогрев кэшей обогащения для демо: прогоняет типовые запросы через запущенный API."""
 import json
 import sys
 import time
@@ -28,7 +25,7 @@ DEMO = [
 
 
 def main(base: str = "http://127.0.0.1:8000") -> None:
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # мимо системного прокси
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for q in DEMO:
         t0 = time.time()
         url = f"{base}/api/search?" + urllib.parse.urlencode({"q": q})

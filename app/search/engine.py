@@ -1,11 +1,4 @@
-"""Поиск поставщиков по названию закупки.
-
-1. запрос -> леммы -> TF-IDF вектор
-2. похожие лоты (косинус по индексу)
-3. коды ОКПД2 запроса = взвешенное голосование похожих лотов
-4. кандидаты = участники похожих лотов + поставщики с опытом по этим ОКПД2
-5. скоринг по объяснимым признакам, причины (reasons) строятся из тех же признаков
-"""
+"""Поиск поставщиков по названию закупки."""
 from __future__ import annotations
 
 import json
@@ -25,24 +18,17 @@ from scipy import sparse
 from app.config import DATA_DIR, DB_PATH, INDEX_DIR, LO_REGION, ROOT, SPB_REGION
 from app.core.text import doc_terms, lemma, normalize, process_query, stopwords
 
-TOP_LOTS = 8000          # сколько лотов с общими словами берём в агрегацию (для балла; в счётчики идут только «похожие»)
-OKPD_VOTE_LOTS = 300     # по скольким лучшим лотам голосуем за ОКПД2
-OKPD_LEVEL = 8           # "26.20.11" — уровень вида продукции
-OKPD_ITEMS = 300         # сколько ближайших позиций ТРУ голосуют за ОКПД2
-OKPD_MISMATCH = 0.25     # множитель похожести лота, если его ОКПД2 не совпал с запросом
+TOP_LOTS = 8000
+OKPD_VOTE_LOTS = 300
+OKPD_LEVEL = 8
+OKPD_ITEMS = 300
+OKPD_MISMATCH = 0.25
 HALF_LIFE_DAYS = 365
 WIN_W, PART_W = 1.0, 0.5
 
-# веса итогового балла (подбираются по офлайн-оценке, см. app/eval)
 W = {"text": 0.50, "okpd": 0.25, "wins": 0.20, "recency": 0.07, "region": 0.05, "breadth": 0.03, "focus": 0.05,
      "customer_rel": 0.20, "customer_any": 0.05, "price": 0.05, "platform": 0.03}
-# Веса проверены на отложенных 200 закупках 2025 года (app/eval/procedure_eval.py, история 2024):
-#   эти веса — Hit@10 55.3%, MRR 0.335; связь с заказчиком даёт ~17% балла, причём опыт у заказчика
-#   «в этой категории» весит вчетверо больше, чем «работал с ним вообще».
-#   Логрегрессия, обученная угадывать победителя, отдаёт заказчику 39% веса и даёт 55.3% — не лучше,
-#   зато закрепляет «своих» поставщиков. Поэтому оставлены сбалансированные веса.
 W_CARD = W
-# факторы, которые считаются только если соответствующее поле закупки заполнено
 CONDITIONAL = {"customer_rel": "customer_inn", "customer_any": "customer_inn", "price": "price", "platform": "platform"}
 FACTOR_LABELS = {
     "text": "Похожие закупки", "okpd": "Опыт по ОКПД2", "wins": "Доля побед", "recency": "Свежесть опыта",
@@ -57,10 +43,10 @@ FACTOR_LABELS["breadth"] = "Заказчиков в похожих закупк�
 _GOODS = re.compile(r"\b(поставк|закупк|приобретени|покупк|товар)\w*", re.I)
 _SERVICES = re.compile(r"\b(оказани|услуг|выполнени|работ|обслуживани|ремонт|монтаж|обучени|вывоз|уборк|охран|аренд)\w*", re.I)
 INTENT_BOOST = 4.0
-WIN_PRIOR = 0.35         # средняя доля побед в ЭМ — когда о конкуренции ничего не известно
-SIM_OK = 0.35            # с какой похожести закупку считаем «похожей» при оценке уверенности
-CONF_SCALE = {"high": 1.0, "medium": 0.85, "low": 0.6}  # множитель балла: слабое совпадение не должно выглядеть как 90+
-SYN_SCALE = 1.0  # множитель веса синонимов от модуля NLP (подбирается офлайн-оценкой)
+WIN_PRIOR = 0.35
+SIM_OK = 0.35
+CONF_SCALE = {"high": 1.0, "medium": 0.85, "low": 0.6}
+SYN_SCALE = 1.0
 
 
 def detect_intent(text: str) -> str | None:
@@ -70,14 +56,14 @@ def detect_intent(text: str) -> str | None:
         return "goods"
     if s and not g:
         return "services"
-    if g and s:  # «поставка и монтаж…» — решает то, что раньше в тексте
+    if g and s:
         return "goods" if g.start() < s.start() else "services"
     return None
 
 
 def _okpd_is_goods(code: str) -> bool:
     try:
-        return int(code[:2]) <= 32  # 33 — ремонт и монтаж оборудования, это услуги
+        return int(code[:2]) <= 32
     except ValueError:
         return False
 
@@ -100,31 +86,31 @@ def okpd_prefix(code: str | None) -> str:
 class Query:
     """Карточка закупки. Обязательно хотя бы одно из: text (название) или items (позиции)."""
     text: str = ""
-    platform: str | None = None      # "ЭМ" | "АИС ГЗ" | None
-    region_only: bool = False        # только СПб и ЛО
+    platform: str | None = None
+    region_only: bool = False
     limit: int = 20
-    items: list[str] = field(default_factory=list)        # названия позиций спецификации
-    okpd_codes: list[str] = field(default_factory=list)   # ОКПД2 позиций, если известны
+    items: list[str] = field(default_factory=list)
+    okpd_codes: list[str] = field(default_factory=list)
     customer_inn: str | None = None
-    price: float | None = None                            # НМЦ
-    is_smp: bool | None = None                            # закупка только для СМП
-    platform_only: bool = False      # искать похожие закупки только на этой площадке (фильтр быстрого поиска)
-    exclude_terms: list[str] = field(default_factory=list)  # ключевые слова, которые пользователь убрал вручную
-    exclude_lot_ids: set[int] = field(default_factory=set)  # для офлайн-оценки
-    before_date: date | None = None                          # для офлайн-оценки
+    price: float | None = None
+    is_smp: bool | None = None
+    platform_only: bool = False
+    exclude_terms: list[str] = field(default_factory=list)
+    exclude_lot_ids: set[int] = field(default_factory=set)
+    before_date: date | None = None
 
 
 class SearchEngine:
     def __init__(self) -> None:
         t0 = time.time()
-        self.XT = sparse.load_npz(INDEX_DIR / "tfidf_T.npz").tocsr()  # terms x lots
+        self.XT = sparse.load_npz(INDEX_DIR / "tfidf_T.npz").tocsr()
         self.lot_ids = np.load(INDEX_DIR / "lot_ids.npy")
         with open(INDEX_DIR / "vectorizer.pkl", "rb") as f:
             v = pickle.load(f)
         self.vocab: dict[str, int] = v["vocabulary"]
         self.idf: np.ndarray = v["idf"]
 
-        self.IT = sparse.load_npz(INDEX_DIR / "items_T.npz").tocsr()  # terms x items
+        self.IT = sparse.load_npz(INDEX_DIR / "items_T.npz").tocsr()
         item_code = np.load(INDEX_DIR / "items_code.npy", allow_pickle=True)
         self.item_name = np.load(INDEX_DIR / "items_name.npy", allow_pickle=True)
         self.item_n = np.load(INDEX_DIR / "items_n.npy")
@@ -142,7 +128,6 @@ class SearchEngine:
         self.lot_subject = lots["subject"].to_numpy()
         self.lot_date = pd.to_datetime(lots["publish_date"]).to_numpy("datetime64[D]")
         self.lot_price = lots["start_price"].to_numpy()
-        # экономия памяти: площадка — int8, заказчик — номер, ОКПД2 лота — CSR из номеров кодов
         self.lot_is_em = (lots["platform"] == "ЭМ").to_numpy(np.int8)
         cust_codes, cust_names = pd.factorize(lots["customer_inn"])
         self.lot_customer = cust_codes.astype(np.int32)
@@ -181,8 +166,6 @@ class SearchEngine:
         names["code8"] = names["okpd2_code"].str[:OKPD_LEVEL]
         sample = (names.sort_values("n_items", ascending=False)
                   .drop_duplicates("code8").set_index("code8")["sample_name"].to_dict())
-        # официальные названия из классификатора ОК 034-2014; если кода нет — название родительской группы,
-        # и только в крайнем случае — самое частое название позиции из датасета
         official_path = ROOT / "data" / "okpd2_names.json"
         official = json.loads(official_path.read_text(encoding="utf-8")) if official_path.exists() else {}
         self.okpd_names = {}
@@ -190,7 +173,6 @@ class SearchEngine:
             self.okpd_names[c] = next((official[k] for k in (c, c[:7], c[:5], c[:4], c[:2]) if k in official),
                                       sample.get(c, ""))
         con.close()
-        # ИНН поставщиков, которые есть в реестре МСП (для закупок «только для СМП»)
         self.msp_inns: set[str] = set()
         rmsp = DATA_DIR / "ext" / "rmsp.parquet"
         if rmsp.exists():
@@ -199,7 +181,6 @@ class SearchEngine:
         print(f"[engine] loaded in {time.time() - t0:.1f}s: {len(self.lot_ids):,} lots, "
               f"{len(self.profile):,} suppliers, {len(self.vocab):,} terms")
 
-    # ------------------------------------------------------------------ text
     @staticmethod
     def _query_vector(terms: list[str], vocab: dict, idf: np.ndarray,
                       qweights: dict[str, float] | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -247,9 +228,6 @@ class SearchEngine:
                     votes[c] += s_ ** 3 * math.log1p(self.item_n[i])
                     if c not in best_item or s_ > best_item[c][0]:
                         best_item[c] = (s_, self.item_name[i])
-        # Второй голос — похожие закупки целиком. Позиции отражают разнообразие названий («питание на
-        # соревнованиях» в десятке вариантов), закупки — что реально покупают чаще («услуги столовых»).
-        # Берём оба источника поровну.
         lot_votes: dict[str, float] = defaultdict(float)
         for p, s_ in zip(pos[:OKPD_VOTE_LOTS], sims[:OKPD_VOTE_LOTS]):
             codes = set(self._lot_codes(p))
@@ -263,16 +241,14 @@ class SearchEngine:
             votes = lot_votes
         if not votes:
             return []
-        if intent:  # тип закупки (товар/услуга) усиливает коды соответствующего раздела ОКПД2
+        if intent:
             for c in votes:
                 if _okpd_is_goods(c) == (intent == "goods"):
                     votes[c] *= INTENT_BOOST
-        if intent:  # тип ясен и лидер ему соответствует — коды другого типа (товар vs услуга) отбрасываем
+        if intent:
             leader = max(votes, key=votes.get)
             if _okpd_is_goods(leader) == (intent == "goods"):
                 votes = {c: v for c, v in votes.items() if _okpd_is_goods(c) == (intent == "goods")}
-        # «21.20» и «21.20.10» — один и тот же товар, закодированный с разной глубиной: голоса короткого
-        # кода отдаём самому сильному из его более точных кодов
         for short in sorted(votes, key=len):
             longer = [c for c in votes if c != short and c.startswith(short) and len(short) >= 5]
             if longer:
@@ -286,8 +262,7 @@ class SearchEngine:
                 for c, sh in ranked[:5] if sh >= top_share * 0.15]
 
     def _expand_codes(self, okpd: list[tuple[str, float]]) -> dict[str, float]:
-        """В данных ~5% позиций закодированы неполно (у лекарств 29% — просто «21.20»).
-        Код из данных считается совпавшим с кодом закупки, если один из них — префикс другого (не короче XX.YY)."""
+        """В данных ~5% позиций закодированы неполно (у лекарств 29% — просто «21.20»)."""
         out: dict[str, float] = {}
         for c, share in okpd:
             for name in self.code8_names:
@@ -306,12 +281,7 @@ class SearchEngine:
 
     def _confidence(self, qp: dict, terms: list[str], pos: np.ndarray, sims: np.ndarray,
                     okpd_from_spec: bool, excl: set[str] = frozenset()) -> dict:
-        """Насколько запрос вообще покрыт историей закупок (абсолютная оценка, а не относительная).
-
-        high   — похожих закупок много, все ключевые слова в них встречаются;
-        medium — похожих немного или часть ключевых слов в них не встречается;
-        low    — похожих закупок единицы: рекомендации приблизительные.
-        """
+        """Насколько запрос вообще покрыт историей закупок (абсолютная оценка, а не относительная)."""
         sw = stopwords()
         core = []
         for k in qp.get("keywords") or []:
@@ -336,7 +306,7 @@ class SearchEngine:
         else:
             level = "high"
         if level == "low" and okpd_from_spec:
-            level = "medium"  # текст редкий, но коды ОКПД2 заданы в спецификации — опираемся на них
+            level = "medium"
         if level == "low":
             msg = (f"В истории закупок почти нет похожих (найдено {n_sim}). Рекомендации приблизительные: "
                    "показаны поставщики ближайших по словам закупок. Уточните название или добавьте позиции и ОКПД2.")
@@ -352,22 +322,20 @@ class SearchEngine:
                 "unmatched_terms": unmatched}
 
     def _weighted_terms(self, qp: dict, raw: str) -> tuple[list[str], dict[str, float] | None]:
-        """Термы запроса с весами от модуля NLP (синоним весит меньше исходного слова),
-        приведённые к леммам индекса (ё->е, pymorphy для незнакомых индексу слов)."""
+        """Термы запроса с весами от модуля NLP (синоним весит меньше исходного слова),"""
         st = qp.get("search_terms")
         if not isinstance(st, dict) or not st:
             return doc_terms(qp.get("corrected") or raw), None
         top = max(st.values()) or 1.0
         sw = stopwords()
         core = {k["lemma"] for k in qp.get("keywords", [])}
-        # «более общие» расширения («перчатки» -> «хозтовары», «мед изделия») размывают выдачу — не берём
         broader = {lm for x in qp.get("synonyms", []) if x.get("kind") == "broader" for lm in x.get("lemmas", [])} - core
         weights: dict[str, float] = {}
         for lem, w in st.items():
             if lem in broader or re.fullmatch(r"[\d.,x×х*/-]+", lem):
-                continue  # общие слова и «голые» числа (15.6) не ищем
+                continue
             if core and lem not in core:
-                w *= SYN_SCALE  # расширения (синонимы) слабее слов из самого запроса
+                w *= SYN_SCALE
             for tok in normalize(lem).split():
                 t = tok if tok in self.vocab else lemma(tok)
                 if t in sw or len(t) < 2:
@@ -375,13 +343,11 @@ class SearchEngine:
                 weights[t] = max(weights.get(t, 0.0), w / top)
         if not weights:
             return doc_terms(qp.get("corrected") or raw), None
-        # содержательные слова, которые модуль NLP отбросил («обучающихся»: школьное питание != больничное)
         for t in doc_terms(qp.get("corrected") or raw):
             if t not in weights and t in self.vocab and not re.fullmatch(r"[\d.,-]+", t):
                 weights[t] = 0.5
         return list(weights), weights
 
-    # ------------------------------------------------------------- suppliers
     def _given_okpd(self, q: Query) -> list[dict]:
         """ОКПД2 из спецификации закупки (если даны): доля кода = доля позиций с ним."""
         cnt: Counter = Counter()
@@ -426,13 +392,13 @@ class SearchEngine:
         text = q.text.strip() or "; ".join(items[:10])
         qp = process_query(text)
         terms, qweights = self._weighted_terms(qp, text)
-        if items and q.text.strip():  # позиции спецификации дополняют название (чуть меньший вес)
+        if items and q.text.strip():
             qweights = dict(qweights or {t: 1.0 for t in terms})
             for t in doc_terms(" ".join(items)):
                 qweights.setdefault(t, 0.7)
             terms = list(qweights)
         excl = {normalize(t).strip() for t in q.exclude_terms if t and t.strip()}
-        if excl:  # пользователь убрал слова, которые не относятся к предмету закупки
+        if excl:
             terms = [t for t in terms if t not in excl]
             if qweights:
                 qweights = {t: w for t, w in qweights.items() if t not in excl}
@@ -450,8 +416,6 @@ class SearchEngine:
         okpd_codes = {self.code8_id[c] for c in okpd_shares}
 
         ref_date = np.datetime64(q.before_date) if q.before_date else self.max_date + np.timedelta64(1, "D")
-        # В балл идут все лоты с общими словами (с весом s² и штрафом за чужой ОКПД2),
-        # а в счётчики и доказательства — только по-настоящему похожие: s >= SIM_OK и ОКПД2 совпал.
         agg: dict[str, dict] = defaultdict(lambda: {
             "text": 0.0, "lots": [], "wins": 0, "parts": 0, "em_parts": 0, "em_wins": 0, "comp_wins": 0,
             "ais_wins": 0, "customers": set(), "last": None, "max_sim": 0.0})
@@ -472,11 +436,11 @@ class SearchEngine:
                     continue
                 a["wins"] += win
                 a["parts"] += 1
-                if self.lot_is_em[p]:   # Электронный магазин: видны все участники
+                if self.lot_is_em[p]:
                     a["em_parts"] += 1
                     a["em_wins"] += win
                     a["comp_wins"] += win and n_bidders > 1
-                else:                   # АИС ГЗ: в выгрузке есть только победитель процедуры
+                else:
                     a["ais_wins"] += win
                 a["customers"].add(self.lot_customer[p])
                 if len(a["lots"]) < 40:
@@ -485,7 +449,6 @@ class SearchEngine:
                 if a["last"] is None or d > a["last"]:
                     a["last"] = d
 
-        # опыт по ОКПД2 (в т.ч. поставщики без текстового совпадения)
         okpd_exp: dict[str, float] = defaultdict(float)
         okpd_detail: dict[str, list] = defaultdict(list)
         if okpd:
@@ -495,7 +458,6 @@ class SearchEngine:
                 okpd_exp[inn] += shares[code8] * (n_wins * WIN_W + (n_lots - n_wins) * PART_W)
                 okpd_detail[inn].append((code8, int(n_lots), int(n_wins)))
 
-        # история с этим заказчиком
         cust = self._customer_history(q, {c[:5] for c, _ in okpd}, ref_date)
 
         cands = (set(agg) | set(sorted(okpd_exp, key=okpd_exp.get, reverse=True)[:500])
@@ -503,7 +465,7 @@ class SearchEngine:
         if q.region_only:
             cands = {i for i in cands if i in self.profile.index
                      and self.profile.at[i, "region_code"] in (SPB_REGION, LO_REGION)}
-        if q.is_smp and self.msp_inns:  # закупка только для малого бизнеса
+        if q.is_smp and self.msp_inns:
             cands = {i for i in cands if i in self.msp_inns}
 
         max_text = math.log1p(10 * max((agg[i]["text"] for i in cands if i in agg), default=1.0)) or 1.0
@@ -519,21 +481,16 @@ class SearchEngine:
                 "okpd": math.log1p(okpd_exp.get(inn, 0)) / max_okpd,
                 "rel_wins": math.log1p(a["wins"]) / max_wins if a else 0.0,
                 "max_sim": a["max_sim"] if a else 0.0,
-                # доля побед в ЭТОЙ категории (сглаженная), а не по всем закупкам компании
-                # Доля побед считается только по Электронному магазину: в АИС ГЗ выгружены одни победители,
-                # там она всегда 100% и ничего не значит. Нет данных ЭМ — нейтральное значение.
                 "wins": ((a["em_wins"] + 1) / (a["em_parts"] + 3)) if a and a["em_parts"]
                         else WIN_PRIOR if a and a["ais_wins"]
                         else 0.5 * self._em_win_rate(prof),
                 "recency": (0.5 ** (max(int((ref_date - a["last"]).astype(int)), 0) / HALF_LIFE_DAYS))
                            if a and a["last"] is not None else 0.0,
-                # специализация: какая доля закупок поставщика приходится на ОКПД2 этой закупки
                 "focus": min(sum(n for _, n, _ in okpd_detail.get(inn, [])) / float(prof["n_lots"]), 1.0)
                          if prof is not None and prof["n_lots"] else 0.0,
                 "region": 1.0 if prof is not None and prof["region_code"] == SPB_REGION else
                           0.5 if prof is not None and prof["region_code"] == LO_REGION else 0.0,
                 "breadth": min(len(a["customers"]) / 10, 1.0) if a else 0.0,
-                # логарифм вместо жёсткого потолка: 1 и 20 закупок у заказчика дают разный вклад
                 "customer_rel": min(math.log1p(h["rel_w"]) / math.log1p(10), 1.0) if h else 0.0,
                 "customer_any": min(math.log1p(h["any_w"]) / math.log1p(40), 1.0) if h else 0.0,
                 "price": self._price_fit(q.price, prof),
@@ -587,7 +544,7 @@ class SearchEngine:
         res["query"]["intent"] = c["intent"]
         res["query"]["excluded"] = c["excluded"]
         res["confidence"] = c["confidence"]
-        if c["confidence"]["level"] == "low":  # «Проверенный» при единичных совпадениях вводил бы в заблуждение
+        if c["confidence"]["level"] == "low":
             for sup in suppliers:
                 sup["status"] = "approx"
                 sup["status_reason"] = "точных совпадений в истории нет — поставщик из ближайших по словам закупок"
@@ -598,7 +555,6 @@ class SearchEngine:
         }
         return res
 
-    # ------------------------------------------------------------- output
     def _status(self, a, okpd_det) -> tuple[str, str]:
         """Статус — по по-настоящему похожим закупкам. Долю побед проверяем только там, где она измерима (ЭМ)."""
         wins = a["wins"] if a else 0
@@ -631,7 +587,6 @@ class SearchEngine:
             elif cust["wins"]:
                 reasons.append(f"Уже работал с этим заказчиком (побед: {cust['wins']})")
         if a and a["parts"]:
-            # «похожие» = близкое название и тот же ОКПД2
             if a["em_parts"]:
                 line = (f"Похожие закупки в Электронном магазине: участвовал в {a['em_parts']}, "
                         f"победил в {a['em_wins']}")
@@ -673,9 +628,7 @@ class SearchEngine:
                 reasons.append(total)
         status, status_reason = self._status(a, okpd_det)
         evidence = []
-        # доказательства: сначала закупки этого же заказчика, затем победы, затем самые похожие
         best_lots = sorted(a["lots"], key=lambda x: (not x[3], not x[2], -x[1]))[:3] if a else []
-        # причина «выигрывал у этого заказчика» должна подтверждаться примером — добавляем его закупку первой
         if cust and cust.get("rel_lots") and not any(x[3] for x in best_lots):
             p0, win0 = sorted(cust["rel_lots"], key=lambda x: (not x[1], -int(self.lot_date[x[0]].astype(int))))[0]
             best_lots = [(p0, 0.0, win0, True)] + best_lots[:2]
@@ -693,8 +646,8 @@ class SearchEngine:
         return {
             "inn": inn,
             "kpp": None if prof is None or pd.isna(prof["kpp"]) else prof["kpp"],
-            "name": None,   # заполняет обогащение
-            "role": None,   # заполняет обогащение: manufacturer | distributor | supplier | service
+            "name": None,
+            "role": None,
             "source": "dataset",
             "score": round(score * 100, 1),
             "status": status,

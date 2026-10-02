@@ -1,18 +1,4 @@
-"""Единая точка входа: название закупки -> поисковый запрос для подбора поставщиков.
-
-    from nlp.query import process_query
-    q = process_query("Поставка картриджы для мфу для нужд ГБОУ школа № 548")
-
-Пайплайн:
-    1. speller   — раскладка, опечатки, бренды (nlp/speller.py)
-    2. леммы
-    3. keywords  — предмет закупки, тип (товар/работа/услуга), веса (nlp/keywords.py)
-    4. synonyms  — расширение по словарю и по данным (nlp/synonyms.py)
-    5. search_terms — {лемма: вес} для BM25/TF-IDF по профилям поставщиков
-       (профиль = леммы product_name/subject лотов, где поставщик участвовал/побеждал),
-       okpd2_hints — вероятные классы ОКПД2 (если собран data/nlp/lemma_okpd2.json)
-    6. explain   — человекочитаемое объяснение для UI (критерий «объяснимость»)
-"""
+"""Единая точка входа: название закупки -> поисковый запрос для подбора поставщиков."""
 from __future__ import annotations
 
 import json
@@ -63,22 +49,16 @@ def process_query(text: str) -> dict:
     start, end = kw["subject_span"]
     subject_lemmas = lemmas[start:end]
 
-    # синонимы ищем только в «предмете», чтобы не расширять «ГБОУ школа»
     expansions = expand(subject_lemmas)
 
-    # веса для поиска
     terms: dict[str, float] = {}
     for k in kw["keywords"]:
         terms[k["lemma"]] = max(terms.get(k["lemma"], 0.0), k["weight"])
-    # аббревиатуры/фразы словаря, найденные в запросе, — тоже значимы, даже если
-    # pymorphy счёл их «служебными» (например, «по» как «программное обеспечение» мы не берём)
     for m in find_matches(subject_lemmas):
         for lem in m.phrase:
             if lem not in _SKIP_IN_EXPANSION and lem not in PROCEDURE and lem not in CUSTOMER:
                 terms.setdefault(lem, round(idf(lem), 3))
     expanded: dict[str, float] = {}
-    # вес синонима = вес_типа_связи × вес найденной в запросе фразы × (0.5 + 0.5·idf)
-    # => синоним никогда не весит больше исходного слова
     for e in expansions:
         matched_w = max((terms.get(l, 0.0) for l in e["matched_lemmas"]), default=0.0) \
             or max(terms.values(), default=0.5)

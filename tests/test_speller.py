@@ -1,8 +1,4 @@
-"""Тесты модуля исправления запросов.
-
-Запуск:  python -m pytest tests/ -v
-Требуется собранный словарь: python scripts/build_vocab.py
-"""
+"""Тесты модуля исправления запросов."""
 from __future__ import annotations
 
 import json
@@ -32,7 +28,6 @@ def vocab() -> dict[str, int]:
         return json.load(f)
 
 
-# ------------------------------------------------------------- опечатки
 def test_postavka():
     assert correct_query("пастовка бумаги")["tokens"][0] == "поставка"
 
@@ -45,7 +40,6 @@ def test_latin_in_vocab_untouched():
     assert "hp" in correct_query("картриджы hp")["tokens"]
 
 
-# ------------------------------------------------------------- раскладка
 def test_layout():
     assert correct_query("ghbynth")["tokens"] == ["принтер"]
 
@@ -55,7 +49,6 @@ def test_layout_keeps_known_latin():
         assert fix_layout(w) == w
 
 
-# ------------------------------------------------------------- токены с цифрами
 def test_fuel_mark():
     assert "аи-92" in correct_query("бензин аи-92")["tokens"]
 
@@ -69,12 +62,10 @@ def test_short_and_numeric_not_corrected():
     assert correct_word("абв") == "абв"
 
 
-# ------------------------------------------------------------- без изменений
 def test_no_change_flag():
     assert correct_query("бумага")["was_corrected"] is False
 
 
-# ------------------------------------------------------------- лемматизация
 def test_lemma_ognetushitel():
     assert "огнетушитель" in correct_query("огнетушителей")["lemmas"]
 
@@ -84,7 +75,6 @@ def test_lemmatize_skips_latin_and_digits():
     assert lemmatize("а4") == "а4"
 
 
-# ------------------------------------------------------------- структура ответа
 def test_result_shape():
     r = correct_query("пастовка бумаги а4")
     assert set(r) == {"original", "corrected", "was_corrected",
@@ -95,7 +85,6 @@ def test_result_shape():
     assert len(r["tokens"]) == len(r["lemmas"])
 
 
-# ------------------------------------------------------------- скорость
 def test_speed_100_queries():
     base = ["поставка бумаги а4", "картриджы hp", "ghbynth лазерный",
             "бензин аи-92", "огнетушителей порошковых", "ремонт кровли",
@@ -111,7 +100,6 @@ def test_speed_100_queries():
     assert elapsed < 2.0, f"100 запросов за {elapsed:.2f}s (лимит 2s)"
 
 
-# ------------------------------------------------------------- диагностика словаря
 @pytest.mark.parametrize("word", ["поставка", "картридж", "принтер",
                                   "hp", "а4", "аи-92", "огнетушитель", "бумага"])
 def test_words_present_in_vocab(vocab, word):

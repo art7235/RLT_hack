@@ -1,8 +1,4 @@
-"""Generate reproducible procurement CSV fixtures from the read-only hackathon DB.
-
-Run from any directory: python scripts/make_test_set.py
-Only tests/data/ is written. The database is never modified.
-"""
+"""Generate reproducible procurement CSV fixtures from the read-only hackathon DB."""
 
 from __future__ import annotations
 
@@ -157,7 +153,7 @@ def fetch_lots(con: duckdb.DuckDBPyConnection, lot_ids: list[int]) -> tuple[list
                 "procedure_name": subject,
                 "product_name": name,
                 "okpd2_code": code,
-                "quantity": "",  # Quantity is absent from the organizer's data.
+                "quantity": "",
                 "start_price": str(price),
                 "customer_inn": str(customer_inn),
                 "platform": platform,
@@ -185,7 +181,6 @@ def write_csv(path: Path, columns: list[str], rows: list[dict], *,
 
 
 def messy_price(value: str) -> str:
-    # Decimal avoids changing the exact price when converting its punctuation.
     formatted = format(Decimal(value), ",.2f")
     return formatted.replace(",", " ").replace(".", ",")
 
@@ -230,7 +225,6 @@ def main() -> None:
     finally:
         con.close()
 
-    # Every source string must survive the alternative cp1251 encoding unchanged.
     for row in clean:
         for column in COLUMNS:
             str(row[column]).encode("cp1251")

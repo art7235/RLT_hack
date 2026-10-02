@@ -1,10 +1,4 @@
-"""Обогащение карточек поставщиков и поиск новых компаний вне датасета.
-
-Источники (в порядке приоритета):
-1. Реестр МСП ФНС — офлайн-выгрузка (rmsp.parquet), если скачана
-2. Реестр МСП ФНС — онлайн-API rmsp.nalog.ru (кэш в SQLite): ОКВЭД, контакты, категория, численность
-3. ЕГРЮЛ (кэш + живой запрос): название, руководитель, статус — для тех, кого нет в реестре МСП
-"""
+"""Обогащение карточек поставщиков и поиск новых компаний вне датасета."""
 from __future__ import annotations
 
 import json
@@ -49,7 +43,7 @@ def short_name(name: str | None, inn: str) -> str | None:
     for full, short in _FORMS:
         if up.startswith(full):
             return short + name[len(full):]
-        if up.endswith(full):  # «"СТИК" ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ»
+        if up.endswith(full):
             return f"{short} {name[:-len(full)].strip()}"
     if len(inn) == 12 and not up.startswith("ИП"):
         return "ИП " + name.title()
@@ -73,19 +67,16 @@ class EnrichStore:
         t0 = time.time()
         self.rmsp = pd.DataFrame()
         if RMSP_PATH.exists():
-            # строки в формате Arrow: в разы компактнее объектов Python; полное название не грузим
             import pyarrow.parquet as pq
             cols = ["inn", "name", "full_name", "ogrn", "region_code", "region_name", "city", "okved_main", "okved_main_name", "okved_extra",
                     "msp_category", "employees", "products", "msp_since", "in_dataset"]
-            cols = [c for c in cols if c in pq.read_schema(RMSP_PATH).names]  # старая выгрузка без region_name
+            cols = [c for c in cols if c in pq.read_schema(RMSP_PATH).names]
             self.rmsp = pd.read_parquet(RMSP_PATH, columns=cols, dtype_backend="pyarrow").set_index("inn")
             self.rmsp["in_dataset"] = self.rmsp["in_dataset"].astype(bool)
         con = duckdb.connect(str(DB_PATH), read_only=True)
-        # ширина ассортимента: число разных классов ОКПД2 (2 знака) у поставщика
         self.n_classes = dict(con.execute(
             "SELECT inn, count(DISTINCT substr(okpd2_code, 1, 2)) FROM supplier_okpd GROUP BY inn").fetchall())
         self.dataset_inns = set(self.n_classes) | {r[0] for r in con.execute("SELECT inn FROM supplier_profile").fetchall()}
-        # класс ОКПД2 (2 знака), где поставщик побеждает чаще всего — для роли, если ОКВЭД неизвестен
         self.top_okpd = {inn: (cls, share) for inn, cls, share in con.execute("""
             SELECT inn, arg_max(cls, w), max(w) / sum(w)
             FROM (SELECT inn, substr(okpd2_code, 1, 2) AS cls, sum(n_wins) AS w
@@ -101,8 +92,7 @@ class EnrichStore:
         self.pool = pd.DataFrame()
         if not self.rmsp.empty:
             mask = (~self.rmsp["in_dataset"].to_numpy(bool)
-                    & np.asarray(self.rmsp.index.astype(object).str.len() == 10))  # новички: только юрлица
-            # в памяти держим только поставщиков датасета и пул кандидатов-новичков
+                    & np.asarray(self.rmsp.index.astype(object).str.len() == 10))
             self.rmsp = self.rmsp[mask | self.rmsp["in_dataset"].to_numpy(bool)]
             self.pool = self.rmsp[~self.rmsp["in_dataset"].to_numpy(bool)]
             self._build_pool_index()
@@ -110,7 +100,6 @@ class EnrichStore:
         self._mapping_built_at = 0.0
         log.info("enrich store ready in %.1fs (rmsp offline rows: %d)", time.time() - t0, len(self.rmsp))
 
-    # --------------------------------------------------------------- lookup
     def _registry(self, inns: list[str], live: bool) -> dict[str, dict]:
         """Выгрузка реестра МСП (ОКВЭД осн./доп.) + кэш онлайн-API (телефон, email). Сеть — только для отсутствующих."""
         offline = {}
@@ -176,7 +165,6 @@ class EnrichStore:
             "okved": {"code": r["okved_main"], "name": r.get("okved_main_name")} if r.get("okved_main") else None,
             "city": r.get("city"),
             "msp_category": r.get("msp_category"),
-            # размер — только по данным реестра МСП; «крупное» без подтверждающего источника не пишем
             "size": {"микро": "micro", "малое": "small", "среднее": "medium"}.get(r.get("msp_category"), "unknown"),
             "size_label": (f"{r['msp_category']} предприятие" if r.get("msp_category")
                            else "размер не определён (нет в реестре МСП)"),
@@ -203,7 +191,7 @@ class EnrichStore:
             for inn in inns:
                 try:
                     rec = self._egrul.fetch(inn)
-                except Exception:  # сессия ЕГРЮЛ протухла — новая сессия и один повтор
+                except Exception:
                     self._egrul = egrul_mod.Egrul()
                     rec = self._egrul.fetch(inn)
                 con.execute("INSERT OR REPLACE INTO egrul VALUES (?, ?, ?)",
@@ -217,7 +205,6 @@ class EnrichStore:
             self._egrul = None
         return out
 
-    # ------------------------------------------------------- new companies
     def _build_pool_index(self) -> None:
         """Инвертированный индекс ОКВЭД(XX.YY) -> позиции компаний пула + статическая часть балла."""
         t0 = time.time()
@@ -237,9 +224,7 @@ class EnrichStore:
         log.info("pool index: %d companies, %d okved keys in %.1fs", len(self.pool), len(self.pool_extra), time.time() - t0)
 
     def _okved_mapping(self) -> dict[str, Counter]:
-        """Какие основные ОКВЭД у победителей по классу ОКПД2 (XX.YY) — выучено на датасете.
-        Даёт оптовиков (46.xx) и торговцев, которых не найти прямым совпадением кодов.
-        Пересчитывается раз в 10 минут, т.к. кэш реестра МСП пополняется в фоне."""
+        """Какие основные ОКВЭД у победителей по классу ОКПД2 (XX.YY) — выучено на датасете."""
         if time.time() - self._mapping_built_at < 600 and self._okved_by_class:
             return self._okved_by_class
         okved = rmsp_api.cached_okved()
@@ -255,8 +240,7 @@ class EnrichStore:
 
     def find_new_companies(self, okpd: list[dict], exclude: set[str], limit: int = 10,
                            local_only: bool = False) -> list[dict]:
-        """Компании из реестра МСП, которых нет в истории закупок, но вид деятельности совпадает с закупкой:
-        местные (СПб, ЛО) — для любых закупок; производители и оптовики из других регионов — только для товаров."""
+        """Компании из реестра МСП, которых нет в истории закупок, но вид деятельности совпадает с закупкой"""
         if not okpd:
             return []
         mapping = self._okved_mapping()
@@ -289,14 +273,13 @@ class EnrichStore:
                     why[inn].append(reason.format(ok=r.get("okved_main") or ok))
         if plans:
             return self._new_from_pool(plans, exclude, limit, federal=self._is_goods(okpd) and not local_only)
-        match = dict(scores)  # сила совпадения вида деятельности до поправок на размер и регион
+        match = dict(scores)
         for inn, r in recs.items():
             emp = r.get("employees") or 0
             scores[inn] += 0.25 * math.log1p(emp)
             scores[inn] += 0.2 if r.get("region_code") == SPB_REGION else 0
             scores[inn] += 0.2 if (r.get("phone") or r.get("email")) else 0
             scores[inn] -= 0.3 if r.get("kind") == "ИП" and not emp else 0
-        # разнообразие: не больше 60% выдачи с одним основным ОКВЭД
         top, per_okved = [], Counter()
         for inn in sorted(scores, key=scores.get, reverse=True):
             ok = (recs[inn].get("okved_main") or "")[:5]
@@ -317,8 +300,7 @@ class EnrichStore:
             return False
 
     def pool_scores(self, okpd: list[dict]) -> np.ndarray:
-        """Баллы всех компаний пула по кодам ОКПД2 закупки (та же формула, что в выдаче; -1 — не подходит).
-        Нужна для офлайн-проверки блока «Новые компании» (app/eval/new_companies_eval.py)."""
+        """Баллы всех компаний пула по кодам ОКПД2 закупки (та же формула, что в выдаче; -1 — не подходит)."""
         mapping = self._okved_mapping()
         sc = np.zeros(len(self.pool))
         for o in okpd[:2]:
@@ -355,10 +337,10 @@ class EnrichStore:
             if inn in exclude:
                 continue
             ok = self.pool_main5[p]
-            if per_okved[ok] >= max(2, int(limit * 0.6)):  # разнообразие видов деятельности
+            if per_okved[ok] >= max(2, int(limit * 0.6)):
                 continue
             if not self.pool_local[p]:
-                if n_federal >= max(1, int(limit * 0.4)):  # иногородних — не больше 40% списка
+                if n_federal >= max(1, int(limit * 0.4)):
                     continue
                 n_federal += 1
             top.append(p)
@@ -380,9 +362,7 @@ class EnrichStore:
         return self._new_cards([self.pool_inns[p] for p in top], recs, why, match)
 
     def _new_cards(self, top: list[str], recs: dict, why: dict, match: dict) -> list[dict]:
-        """Балл новой компании — абсолютный (максимум 80: без истории закупок 100 не бывает) и с разбивкой:
-        совпадение вида деятельности с закупкой (до 50), размер (до 15), стаж в реестре МСП (до 5),
-        регион (до 5), наличие контактов (до 5)."""
+        """Балл новой компании — абсолютный (максимум 80: без истории закупок 100 не бывает) и с разбивкой"""
         contacts = rmsp_api.get_many(top, live=True)
         rnp = rnp_mod.get_many(top, live=True)
         out = []

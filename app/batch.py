@@ -1,9 +1,4 @@
-"""Пакетная обработка: шаблон закупок (CSV / Excel) -> рекомендации по каждой закупке -> Excel.
-
-Шаблон: одна строка = одна позиция спецификации; строки одной закупки имеют общий procedure_id.
-Колонки узнаются по нескольким вариантам названий (в т.ч. как в исходном датасете АИС ГЗ).
-Пустые поля допустимы: нет ОКПД2 — определим по названию, нет заказчика — фактор не учитывается.
-"""
+"""Пакетная обработка: шаблон закупок (CSV / Excel) -> рекомендации по каждой закупке -> Excel."""
 from __future__ import annotations
 
 import csv
@@ -37,7 +32,6 @@ TEMPLATE_EXAMPLE = [
      "1200000", "", "АИС ГЗ", "да", ""],
 ]
 
-# варианты названий колонок (сравнение без регистра, пробелов и знаков)
 ALIASES = {
     "procedure_id": ["procedure_id", "id", "номер", "номер закупки", "номер процедуры", "№", "n"],
     "lot_id": ["lot_id", "номер лота", "лот", "id лота"],
@@ -62,10 +56,9 @@ def _key(s: str) -> str:
 
 
 _ALIAS_INDEX = {_key(a): col for col, names in ALIASES.items() for a in names}
-_SILENT = {"customer kpp", "кпп заказчика"}  # колонки выгрузки АИС ГЗ, которые нам не нужны — без замечания
+_SILENT = {"customer kpp", "кпп заказчика"}
 
 
-# ------------------------------------------------------------------ template
 def template_csv() -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
@@ -87,7 +80,6 @@ def template_xlsx() -> bytes:
     return out.getvalue()
 
 
-# ------------------------------------------------------------------ parsing
 def _read_table(data: bytes, filename: str = "") -> pd.DataFrame:
     if data[:2] == b"PK" or filename.lower().endswith((".xlsx", ".xlsm")):
         return pd.read_excel(io.BytesIO(data), dtype=str, sheet_name=0)
@@ -101,8 +93,6 @@ def _read_table(data: bytes, filename: str = "") -> pd.DataFrame:
         text = data.decode("utf-8", errors="replace")
     head = "\n".join(text.splitlines()[:5])
     sep = max([";", ",", "\t", "|"], key=head.count)
-    # заголовок, где две колонки попали в одни кавычки ("reqnum;procedure_name"), сдвигает все данные —
-    # разбираем такую ячейку обратно на отдельные названия
     first, _, rest = text.partition("\n")
     names = next(csv.reader([first.strip("\r\n")], delimiter=sep), [])
     if any(sep in n for n in names):
@@ -113,7 +103,7 @@ def _read_table(data: bytes, filename: str = "") -> pd.DataFrame:
 
 def _price(v: str) -> float | None:
     s = re.sub(r"[^\d,.\-]", "", str(v or "")).replace(",", ".")
-    if s.count(".") > 1:  # «1.234.567.89» -> оставляем последнюю точку как десятичную
+    if s.count(".") > 1:
         head, tail = s.rsplit(".", 1)
         s = head.replace(".", "") + "." + tail
     try:
@@ -124,7 +114,7 @@ def _price(v: str) -> float | None:
 
 def _inn(v: str) -> str | None:
     d = re.sub(r"\D", "", str(v or ""))
-    if len(d) in (9, 11):  # потерянный ведущий ноль (Excel)
+    if len(d) in (9, 11):
         d = "0" + d
     return d if len(d) in (10, 12) else None
 
@@ -157,15 +147,14 @@ def _normalize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         if col and col not in mapping.values():
             mapping[c] = col
         elif not col and _key(c) not in _SILENT:
-            unknown.append(str(c))  # второй вариант уже распознанной колонки (subject при procedure_name) молча пропускаем
+            unknown.append(str(c))
     df = df.rename(columns=mapping)[[c for c in mapping.values()]]
     df = df.fillna("").astype(str).apply(lambda x: x.str.strip())
     return df[(df != "").any(axis=1)], unknown
 
 
 def _merge(tables: list[pd.DataFrame]) -> pd.DataFrame:
-    """Несколько файлов (например, «извещения» и «позиции» из выгрузки АИС ГЗ) склеиваем по номеру лота
-    или номеру закупки. Если общего номера нет — просто ставим строки друг за другом."""
+    """Несколько файлов (например, «извещения» и «позиции» из выгрузки АИС ГЗ) склеиваем по номеру лота"""
     if len(tables) == 1:
         return tables[0]
     key = next((k for k in ("lot_id", "procedure_id") if all(k in t.columns for t in tables)), None)
@@ -182,15 +171,14 @@ def _merge(tables: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def parse_procurements(data, filename: str = "", max_procedures: int = 300) -> tuple[list[dict], list[dict]]:
-    """Файл или несколько файлов -> (список закупок, список проблем). Закупка = dict с полями Query.
-    data: bytes одного файла или список пар (bytes, имя файла)."""
+    """Файл или несколько файлов -> (список закупок, список проблем). Закупка = dict с полями Query."""
     files = data if isinstance(data, list) else [(data, filename)]
     errors: list[dict] = []
     tables = []
     for raw, name in files:
         try:
             t, unknown = _normalize(_read_table(raw, name))
-        except Exception as e:  # noqa: BLE001 — любая ошибка чтения файла идёт пользователю как проблема
+        except Exception as e:  # noqa: BLE001
             errors.append({"row": None, "procedure_id": None, "problem": f"не удалось прочитать файл {name}: {e}"})
             continue
         if unknown:
@@ -253,7 +241,6 @@ def parse_procurements(data, filename: str = "", max_procedures: int = 300) -> t
     return procs, errors
 
 
-# ------------------------------------------------------------------ results store + export
 _BATCHES: "OrderedDict[str, dict]" = OrderedDict()
 
 
@@ -269,7 +256,7 @@ def get_batch(bid: str) -> dict | None:
     return _BATCHES.get(bid)
 
 
-EXPORT_TOP = 10  # сколько поставщиков из истории на закупку идёт в файл (на экране можно раскрыть больше)
+EXPORT_TOP = 10
 
 
 def _rows(batch: dict) -> tuple[list[dict], list[dict]]:

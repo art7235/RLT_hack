@@ -1,13 +1,4 @@
-"""Сборка частотного словаря из текстов закупок.
-
-Источники:
-  data/raw/ТРУ_24-25.csv        -> product_name
-  data/raw/Извещения_24-25.csv  -> procedure_name, subject
-
-Результат: data/nlp/vocab.json  {"слово": частота}, сортировка по убыванию частоты.
-
-Запуск:  python scripts/build_vocab.py
-"""
+"""Сборка частотного словаря из текстов закупок."""
 from __future__ import annotations
 
 import json
@@ -43,12 +34,11 @@ def count_column(path: Path, columns: list[str], counter: Counter) -> int:
         print(f"!! нет файла {path}", file=sys.stderr)
         return 0
     rows = 0
-    seen: set[str] = set()          # уже посчитанные уникальные тексты
+    seen: set[str] = set()
     t0 = time.time()
     for chunk in pd.read_csv(path, usecols=columns, chunksize=CHUNK, **READ_KW):
         rows += len(chunk)
         for col in columns:
-            # дубликаты текстов убираем до токенизации — это основной ускоритель
             for text in chunk[col].dropna().unique():
                 if text in seen:
                     continue

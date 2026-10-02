@@ -14,7 +14,6 @@ DB_PATH = DATA_DIR / "tender.duckdb"
 INDEX_DIR = DATA_DIR / "index"
 ENRICH_DB = DATA_DIR / "enrich.sqlite"
 
-# словари от команды NLP (маленькие, лежат в репозитории)
 NLP_DICT_DIR = ROOT / "data" / "nlp"
 
 SPB_REGION = "78"

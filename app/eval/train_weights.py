@@ -1,10 +1,4 @@
-"""Подбор весов скоринга логистической регрессией на истории.
-
-Train: 600 лотов 2025 года, test: 200 других лотов 2025 года; история признаков — только 2024.
-Модель линейная, поэтому вклад каждого признака остаётся объяснимым.
-
-Запуск: python -m app.eval.train_weights
-"""
+"""Подбор весов скоринга логистической регрессией на истории."""
 import json
 import time
 
@@ -73,7 +67,7 @@ def main() -> None:
     X = np.vstack([d["X"] for d in train if len(d["inns"])])
     y = np.concatenate([d["y"] for d in train if len(d["inns"])])
     clf = LogisticRegression(C=1.0, class_weight="balanced", max_iter=2000).fit(X, y)
-    w_learned = np.clip(clf.coef_[0], 0, None)  # отрицательные веса обнуляем ради объяснимости
+    w_learned = np.clip(clf.coef_[0], 0, None)
     w_learned = w_learned / w_learned.sum()
 
     w_hand = np.array([eng_mod.W.get(k, 0) for k in FEATURES])

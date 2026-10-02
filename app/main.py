@@ -1,7 +1,4 @@
-"""FastAPI: поиск поставщиков + статика фронтенда.
-
-Запуск: uvicorn app.main:app --port 8000
-"""
+"""FastAPI: поиск поставщиков + статика фронтенда."""
 from __future__ import annotations
 
 import csv
@@ -24,7 +21,6 @@ from app.search.engine import Query, get_engine
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Поиск поставщиков АИС ГЗ / ЭМ СПб")
-# ответ пакетной обработки — около 4 МБ текста на 40 закупок; со сжатием уходит в 10 раз меньше
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 FRONT = ROOT / "frontend"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -46,7 +42,6 @@ def _penalize_rnp(res: dict) -> None:
     """Действующая запись в реестре недобросовестных поставщиков — балл вдвое ниже, поставщик уходит вниз."""
     for s in res["suppliers"]:
         if (s.get("rnp") or {}).get("in_rnp"):
-            # штраф показываем отдельной строкой в разбивке, чтобы сумма вкладов сходилась с баллом
             s["penalty"] = {"label": "Реестр недобросовестных поставщиков", "points": round(-s["score"] * 0.5, 1)}
             s["score"] = round(s["score"] * 0.5, 1)
             s["status_reason"] = "балл снижен вдвое: действующая запись в реестре недобросовестных поставщиков"
@@ -78,7 +73,7 @@ def search(
     limit: int = Q(20, ge=1, le=100),
     external: bool = True,
     live_enrich: bool = True,
-    exclude: str = "",  # ключевые слова через запятую, которые пользователь убрал из поиска
+    exclude: str = "",
 ) -> dict:
     return _run_search(q, platform, region_only, limit, external, live_enrich, exclude)
 
@@ -136,7 +131,6 @@ def supplier(inn: str, okpd: str = "") -> dict:
     return card
 
 
-# ------------------------------------------------------------ карточка закупки и пакет
 class Procurement(BaseModel):
     """Карточка закупки — основной сценарий: «по данным закупки подобрать контрагентов»."""
     procedure_id: str | None = None
@@ -147,7 +141,7 @@ class Procurement(BaseModel):
     customer_inn: str | None = None
     platform: Literal["ЭМ", "АИС ГЗ"] | None = None
     is_smp: bool | None = None
-    exclude_terms: list[str] = []  # ключевые слова, которые пользователь убрал в блоке «Как система поняла закупку»
+    exclude_terms: list[str] = []
 
 
 def _run_procurement(p: dict, limit: int, n_new: int, live: bool) -> dict:
@@ -169,8 +163,7 @@ def _run_procurement(p: dict, limit: int, n_new: int, live: bool) -> dict:
 @app.post("/api/procurement")
 def procurement(p: Procurement, limit: int = Q(20, ge=1, le=100), n_new: int = Q(10, ge=0, le=30),
                 batch_id: str = "", index: int = -1) -> dict:
-    """batch_id + index — повторный подбор одной закупки из уже обработанного файла (пользователь убрал
-    лишние ключевые слова): новый результат заменяет старый и в выгрузке Excel / CSV."""
+    """batch_id + index — повторный подбор одной закупки из уже обработанного файла (пользователь убрал"""
     if not p.text.strip() and not any(i.strip() for i in p.items):
         raise HTTPException(400, "укажите наименование закупки или хотя бы одну позицию")
     res = _run_procurement(p.model_dump(), limit, n_new, live=True)
@@ -192,7 +185,7 @@ def template_xlsx():
                              headers={"Content-Disposition": "attachment; filename=procurement_template.xlsx"})
 
 
-_PROGRESS: dict[str, dict] = {}  # номер задания (придумывает браузер) -> сколько закупок пакета уже обработано
+_PROGRESS: dict[str, dict] = {}
 
 
 @app.get("/api/batch/progress/{job}")
@@ -203,19 +196,17 @@ def batch_progress(job: str) -> dict:
 @app.post("/api/batch")
 def batch(file: list[UploadFile] = File(...), limit: int = Q(10, ge=1, le=50),
           n_new: int = Q(5, ge=0, le=20), job: str = Q("", max_length=40)) -> dict:
-    """Один файл по шаблону или несколько файлов выгрузки (извещения + позиции) — склеиваются по номеру лота.
-    Обычная (не async) функция: пакет считается десятки секунд, и в отдельном потоке он не блокирует
-    остальные запросы к серверу — в том числе опрос прогресса по номеру задания job."""
+    """Один файл по шаблону или несколько файлов выгрузки (извещения + позиции) — склеиваются по номеру лота."""
     files = [(f.file.read(), f.filename or "") for f in file]
     procs, errors = batch_mod.parse_procurements(files)
-    live = len(procs) <= 5  # большие пакеты — только кэш, чтобы не упираться в лимиты ФНС
+    live = len(procs) <= 5
     out = []
     if job:
         _PROGRESS[job] = {"done": 0, "total": len(procs)}
     for k, p in enumerate(procs, 1):
         try:
             res = _run_procurement(p, limit, n_new, live)
-        except Exception as e:  # noqa: BLE001 — одна плохая закупка не должна ронять весь пакет
+        except Exception as e:  # noqa: BLE001
             errors.append({"row": None, "procedure_id": p["procedure_id"], "problem": f"ошибка обработки: {e}"})
             continue
         finally:

@@ -1,8 +1,4 @@
-"""Классификация роли контрагента: производитель / дистрибьютор / поставщик / подрядчик / исполнитель услуг.
-
-Правила прозрачные: каждый сигнал добавляет баллы роли и пишет причину,
-итоговая уверенность = доля баллов победившей роли.
-"""
+"""Классификация роли контрагента: производитель / дистрибьютор / поставщик / подрядчик / исполнитель услуг."""
 from __future__ import annotations
 
 import re
@@ -113,7 +109,6 @@ def classify(okved_main: str | None, okved_main_name: str | None = None, okved_e
     ranked = sorted(score, key=score.get, reverse=True)
     best, second = ranked[0], ranked[1]
     share = score[best] / total
-    # число независимых признаков «за» роль: ОКВЭД, доп. ОКВЭД, продукция, название, профиль закупок
     n_signals = len(reasons[best])
     level = "высокая" if share >= 0.8 and n_signals >= 2 else "средняя" if share >= 0.55 else "низкая"
     out_reasons = list(reasons[best])
@@ -127,7 +122,7 @@ def classify(okved_main: str | None, okved_main_name: str | None = None, okved_e
         "role": best,
         "role_label": ROLE_LABELS[best],
         "confidence": round(share, 2),
-        "confidence_label": level,   # показываем словами: доля баллов — не вероятность
+        "confidence_label": level,
         "role_reasons": out_reasons,
         "role_alt": alt,
     }

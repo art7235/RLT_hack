@@ -1,21 +1,4 @@
-"""Добыча знаний из датасета: аббревиатуры и связь «слово -> ОКПД2».
-
-1. Аббревиатуры. В названиях закупок их почти всегда расшифровывают:
-       «…системы контроля и управления доступом (СКУД)…»
-       «…горюче-смазочных материалов (ГСМ)…»
-   Ищем «(АББР)» и проверяем, что первые буквы предшествующих значимых слов
-   складываются в АББР. Пары, встретившиеся >= MIN_ABBR раз, пишем в
-   data/nlp/synonyms_mined.json (формат как у synonyms_curated.json) —
-   nlp/synonyms.py подхватит их автоматически.
-
-2. Лемма -> ОКПД2. По ТРУ (product_name, okpd2_code) считаем P(класс | лемма)
-   на уровне группы ОКПД2 (XX.XX). Результат data/nlp/lemma_okpd2.json:
-       {"картридж": [["20.59", 0.61], ["28.23", 0.22], ...], ...}
-   nlp/query.py по нему выдаёт okpd2_hints — по ним удобно отбирать поставщиков,
-   которые уже поставляли товары этого класса.
-
-Запуск:  python scripts/mine_synonyms.py [--raw data/raw]   (~1–3 мин на полном датасете)
-"""
+"""Добыча знаний из датасета: аббревиатуры и связь «слово -> ОКПД2»."""
 from __future__ import annotations
 
 import argparse
@@ -42,11 +25,11 @@ READ_KW = dict(sep=";", quotechar='"', encoding="utf-8", dtype=str,
                on_bad_lines="skip", engine="c")
 CHUNK = 500_000
 
-MIN_ABBR = 3            # минимум упоминаний пары «расшифровка (АББР)»
-MIN_LEMMA = 5           # минимум текстов с леммой для статистики ОКПД2
+MIN_ABBR = 3
+MIN_LEMMA = 5
 TOP_OKPD = 5
 MIN_P = 0.05
-OKPD_LEVEL = 5          # «20.59» — первые 5 символов кода
+OKPD_LEVEL = 5
 
 _ABBR = re.compile(r"\(\s*([А-ЯЁA-Z]{2,8})\s*\)")
 _WORD = re.compile(r"[А-Яа-яЁёA-Za-z]+(?:-[А-Яа-яЁёA-Za-z]+)*")
@@ -58,7 +41,7 @@ def _initials(words: list[str]) -> str:
     for w in words:
         if w.lower() in _SKIP:
             continue
-        for part in w.split("-"):          # горюче-смазочные -> г, с
+        for part in w.split("-"):
             if part:
                 out.append(part[0].lower())
     return "".join(out)
@@ -70,7 +53,6 @@ def find_abbreviations(text: str) -> list[tuple[str, str]]:
     for m in _ABBR.finditer(text):
         abbr = m.group(1).lower().replace("ё", "е")
         before = _WORD.findall(text[max(0, m.start() - 200):m.start()])
-        # перебираем хвосты разной длины, ищем совпадение инициалов
         for k in range(1, min(len(before), len(abbr) + 4) + 1):
             tail = before[-k:]
             if tail[0].lower() in _SKIP:
@@ -109,7 +91,6 @@ def main() -> None:
     tru, notices = raw / "ТРУ_24-25.csv", raw / "Извещения_24-25.csv"
     t0 = time.time()
 
-    # ---------------------------------------------------------- 1. аббревиатуры
     pairs: Counter[tuple[str, str]] = Counter()
     seen: set[str] = set()
     sources = [(notices, ["procedure_name", "subject"]), (tru, ["product_name"])]
@@ -140,7 +121,6 @@ def main() -> None:
     for g in groups[:15]:
         print("     ", g)
 
-    # ---------------------------------------------------------- 2. лемма -> ОКПД2
     lem_cnt: Counter[str] = Counter()
     lem_cls: dict[str, Counter] = defaultdict(Counter)
     seen_pairs: set[tuple[str, str]] = set()

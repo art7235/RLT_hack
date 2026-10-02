@@ -1,5 +1,4 @@
 #!/bin/sh
-# Полная сборка данных на сервере. Запуск: sh deploy/build.sh
 set -e
 cd /opt/tenderhack
 export TH_DATA_DIR=/data/tenderhack

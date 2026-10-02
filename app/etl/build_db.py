@@ -1,7 +1,4 @@
-"""CSV -> DuckDB: сырые таблицы + профили поставщиков.
-
-Запуск: python -m app.etl.build_db
-"""
+"""CSV -> DuckDB: сырые таблицы + профили поставщиков."""
 import time
 
 import duckdb
@@ -20,7 +17,6 @@ def build() -> None:
     if DB_PATH.exists():
         DB_PATH.unlink()
     con = duckdb.connect(str(DB_PATH))
-    # на машинах с 4 ГБ памяти агрегаты не помещаются в RAM — ограничиваем и даём DuckDB сбрасывать на диск
     con.execute("SET memory_limit='1200MB'")
     con.execute("SET threads=2")
     con.execute("SET preserve_insertion_order=false")
@@ -31,7 +27,6 @@ def build() -> None:
         n = con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
         print(f"[{time.time() - t0:6.1f}s] {name}: {n:,}")
 
-    # --- сырые таблицы -----------------------------------------------------
     step("lots", f"""
         CREATE TABLE lots AS
         SELECT CAST(lot_id AS BIGINT)                AS lot_id,
@@ -65,9 +60,6 @@ def build() -> None:
         WHERE length(supplier_inn) IN (10, 12)
     """)
 
-    # --- документы для поиска: предмет лота + уникальные позиции ТРУ ---------
-    # Склейка позиций в текст закупки не умеет сбрасываться на диск, поэтому считаем её порциями
-    # по номеру лота — так сборка проходит и на машине с 4 ГБ памяти.
     con.execute("CREATE TABLE lot_docs (lot_id BIGINT, subject VARCHAR, items VARCHAR, okpd2_codes VARCHAR[])")
     batches = 8
     for b in range(batches):
@@ -85,7 +77,6 @@ def build() -> None:
         """)
     print(f"[{time.time() - t0:6.1f}s] lot_docs: {con.execute('SELECT count(*) FROM lot_docs').fetchone()[0]:,}")
 
-    # --- профиль поставщика -------------------------------------------------
     step("supplier_profile", """
         CREATE TABLE supplier_profile AS
         WITH p AS (
@@ -114,7 +105,6 @@ def build() -> None:
         GROUP BY inn
     """)
 
-    # --- опыт поставщика по кодам ОКПД2 -------------------------------------
     step("supplier_okpd", """
         CREATE TABLE supplier_okpd AS
         WITH li AS (SELECT DISTINCT lot_id, okpd2_code FROM lot_items WHERE okpd2_code IS NOT NULL)
@@ -129,7 +119,6 @@ def build() -> None:
         GROUP BY p.inn, li.okpd2_code
     """)
 
-    # --- справочник ОКПД2: самое частое название позиции на код ---------------
     step("okpd2_names", """
         CREATE TABLE okpd2_names AS
         SELECT okpd2_code, arg_max(product_name, cnt) AS sample_name, sum(cnt) AS n_items

@@ -1,11 +1,4 @@
-"""Офлайн-оценка качества рекомендаций.
-
-Честный split по времени: история = 2024 год (лоты, опыт по ОКПД2, доля побед),
-запросы = реальные лоты 2025 года (берём их предмет как текст запроса).
-Смотрим, попадают ли фактические победитель и участники в топ-K.
-
-Запуск: python -m app.eval.evaluate [n_queries]
-"""
+"""Офлайн-оценка качества рекомендаций."""
 import sys
 import time
 from datetime import date
@@ -87,7 +80,7 @@ def evaluate(n: int = 300) -> dict:
     t0 = time.time()
     e = eng_mod.get_engine()
     con = duckdb.connect(str(DB_PATH), read_only=True)
-    e.profile, e.sokpd = _history_tables(con)  # подменяем на историю до SPLIT
+    e.profile, e.sokpd = _history_tables(con)
     qs = _sample_queries(con, n)
     con.close()
     print(f"[{time.time() - t0:5.0f}s] {len(qs)} queries")

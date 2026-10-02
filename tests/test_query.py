@@ -1,7 +1,4 @@
-"""Тесты v2: регрессии спеллера, ключевые слова, синонимы, process_query.
-
-Запуск:  python -m pytest tests/ -v
-"""
+"""Тесты v2: регрессии спеллера, ключевые слова, синонимы, process_query."""
 from __future__ import annotations
 
 import sys
@@ -24,18 +21,17 @@ def toks(q):
     return correct_query(q)["tokens"]
 
 
-# ------------------------------------------------------------- регрессии спеллера v1
 @pytest.mark.parametrize("q, expected", [
-    ("ноутбк", ["ноутбук"]),            # v1: «ноутбука» (выбирал самую частую форму)
-    ("ремнт", ["ремонт"]),              # v1: «ремонту»
-    ("снегоуборка", ["снегоуборка"]),   # v1: «снегоуборщика» (портил правильное слово)
-    ("ve;crjq rjcn.v", ["мужской", "костюм"]),   # v1: ; и . терялись при токенизации
-    ("gjcnfdrf <evfub", ["поставка", "бумаги"]),  # < — это «Б»
+    ("ноутбк", ["ноутбук"]),
+    ("ремнт", ["ремонт"]),
+    ("снегоуборка", ["снегоуборка"]),
+    ("ve;crjq rjcn.v", ["мужской", "костюм"]),
+    ("gjcnfdrf <evfub", ["поставка", "бумаги"]),
     ("ghbynth,", ["принтер"]),
     ("леново", ["lenovo"]),
-    ("сфтщт", ["canon"]),               # латинский бренд в русской раскладке
-    ("бумага a4", ["бумага", "а4"]),    # латинская «a» -> русская «а»
-    ("laptop", ["laptop"]),             # английское слово не «переводим» в абракадабру
+    ("сфтщт", ["canon"]),
+    ("бумага a4", ["бумага", "а4"]),
+    ("laptop", ["laptop"]),
     ("wi-fi роутер", ["wi-fi", "роутер"]),
 ])
 def test_speller_regressions(q, expected):
@@ -43,8 +39,8 @@ def test_speller_regressions(q, expected):
 
 
 def test_lemma_unknown_abbreviation_kept():
-    assert correct_query("скуд")["lemmas"] == ["скуд"]       # pymorphy: «скуда»
-    assert correct_query("клининг")["lemmas"] == ["клининг"]  # pymorphy: «клининга»
+    assert correct_query("скуд")["lemmas"] == ["скуд"]
+    assert correct_query("клининг")["lemmas"] == ["клининг"]
 
 
 def test_context_lemmatization():
@@ -56,7 +52,6 @@ def test_known_word_not_corrected():
     assert correct_word("патока") == "патока"
 
 
-# ------------------------------------------------------------- ключевые слова
 def test_customer_tail_dropped():
     r = process_query("Поставка картриджей для МФУ для нужд ГБОУ школа № 548 "
                       "Калининского района Санкт-Петербурга в 2025 году")
@@ -91,7 +86,6 @@ def test_purpose_weighted_lower_than_head():
     assert kw["картридж"]["weight"] > kw["принтер"]["weight"]
 
 
-# ------------------------------------------------------------- синонимы
 def test_abbreviation_both_ways():
     terms = process_query("скуд")["search_terms"]
     assert {"контроль", "управление", "доступ"} <= set(terms)
@@ -118,7 +112,6 @@ def test_synonym_never_outweighs_original():
 
 
 def test_no_expansion_of_customer():
-    # «ГБОУ» и «школа» не должны тянуть синонимы
     r = process_query("Поставка бумаги для нужд ГБОУ школа № 5")
     assert all(e["matched"] not in {"гбоу", "школа"} for e in r["synonyms"])
 
@@ -128,7 +121,6 @@ def test_narrower():
     assert any(e["kind"] == "narrower" and e["term"] == "принтер" for e in terms)
 
 
-# ------------------------------------------------------------- формат / объяснимость / скорость
 def test_result_shape_and_explain():
     r = process_query("Поставка картриджы для мфу для нужд ГБОУ")
     for key in ("original", "corrected", "changes", "tokens", "lemmas", "procurement_type",
@@ -150,7 +142,6 @@ def test_speed_process_query():
     assert time.perf_counter() - t0 < 2.0
 
 
-# ------------------------------------------------------------- одежда, обувь, шины
 @pytest.mark.parametrize("q, syn", [
     ("толстовка", "худи"),
     ("кросовки", "кроссовок"),

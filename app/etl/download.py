@@ -1,8 +1,4 @@
-"""Многопоточная докачка больших файлов Range-запросами (сервер ФНС рвёт длинные соединения).
-
-python -m app.etl.download <url> <path> [workers]
-Прогресс хранится в <path>.done, можно перезапускать.
-"""
+"""Многопоточная докачка больших файлов Range-запросами (сервер ФНС рвёт длинные соединения)."""
 import sys
 import threading
 import time
@@ -22,7 +18,6 @@ def download(url: str, path: Path, workers: int = 12) -> None:
     done = set(int(x) for x in done_path.read_text().split()) if done_path.exists() else set()
 
     if path.exists() and path.stat().st_size < size and not done:
-        # файл от обычного curl: полностью скачанные куски в начале считаем готовыми
         done = set(range(path.stat().st_size // CHUNK))
     if not path.exists() or path.stat().st_size != size:
         with open(path, "r+b" if path.exists() else "wb") as f:
@@ -50,7 +45,7 @@ def download(url: str, path: Path, workers: int = 12) -> None:
                                     buf += part
                                     pos += len(part)
                             except Exception:
-                                pass  # обрыв: продолжим с pos
+                                pass
                     with lock:
                         with open(path, "r+b") as f:
                             f.seek(start)

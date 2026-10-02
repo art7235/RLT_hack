@@ -1,31 +1,4 @@
-"""Ключевые слова из названия закупки.
-
-Название закупки — это шаблон «<действие> <предмет> <для кого> <где/когда>»:
-    «Поставка бумаги для офисной техники для нужд ГБОУ школа № 548 Калининского района
-     Санкт-Петербурга в 2025 году»
-Для поиска поставщика важен только ПРЕДМЕТ: бумага, офисная техника.
-
-Алгоритм:
-  1. обрезаем «хвост заказчика»: с первого маркера («для нужд», «по адресу», «для гбоу»,
-     «в 2025 году», «в соответствии с» …), если до него уже есть содержательные слова;
-  2. убираем процедурные слова (поставка, оказание, услуга, выполнение …), оргформы,
-     районы, топонимы, месяцы, адресные сокращения, годы;
-  3. оставляем существительные, прилагательные, причастия, латиницу (бренды/модели)
-     и токены с цифрами (а4, аи-95, 3х2.5 — характеристики);
-  4. вес = IDF леммы по частотам из датасета × роль слова:
-        object  — предмет действия («ремонт КРОВЛИ»)   × 1.3
-        purpose — назначение после «для» («картридж для ПРИНТЕРА») × 0.7
-        head    — главное существительное              × 1.3
-        noun    — прочие существительные               × 1.0
-        brand   — латиница                             × 1.0
-        spec    — характеристика с цифрами («5 мл», «а4») × 0.9, idf не выше 0.6
-        action  — действие («ремонт», «вывоз»)         × 0.8
-        attr    — прилагательное/причастие             × 0.7
-  5. тип закупки: товар / работа / услуга — по процедурным словам или по слову-действию.
-
-Публичный API:
-    extract_keywords(tokens, lemmas) -> dict
-"""
+"""Ключевые слова из названия закупки."""
 from __future__ import annotations
 
 import json
@@ -38,9 +11,8 @@ from nlp.speller import pos_tag
 
 ROOT = Path(__file__).resolve().parents[1]
 LEMMA_FREQ_PATH = ROOT / "data" / "nlp" / "lemma_freq.json"
-N_DOCS = 1_500_000          # ≈ число уникальных текстов, по которым собран vocab.json
+N_DOCS = 1_500_000
 
-# --- процедурные слова: сообщают ТИП закупки, но не предмет
 PROCEDURE = {
     "поставка": "товар", "приобретение": "товар", "закупка": "товар", "товар": "товар",
     "продукция": None, "выполнение": "работа", "работа": "работа",
@@ -54,7 +26,6 @@ PROCEDURE = {
     "количество": None, "штука": None, "шт": None, "ед": None, "единица": None,
 }
 
-# --- действия: сами по себе не предмет, но определяют тип и «тянут» дополнение
 ACTION_TYPE = {
     "ремонт": "работа", "строительство": "работа", "реконструкция": "работа",
     "монтаж": "работа", "демонтаж": "работа", "установка": "работа", "замена": "работа",
@@ -77,11 +48,9 @@ ACTION_TYPE = {
     "изготавливание": "работа", "пошив": "работа", "сборка": "работа",
 }
 
-# --- слабые подсказки типа (если нет ни процедурных слов, ни действий)
 WEAK_TYPE = {"организация": "услуга", "проведение": "услуга", "осуществление": "услуга",
              "питание": "услуга"}
 
-# --- кто/где/когда: оргформы, топонимы, районы СПб, адресные слова, даты
 CUSTOMER = {
     "гбоу", "гбдоу", "гбу", "гбуз", "гоу", "гуп", "спбгуп", "гку", "гбпоу", "гбоудо",
     "гбудо", "гбноу", "гбсу", "гау", "фгбу", "фгбоу", "фгуп", "мку", "муп", "оао", "ооо",
@@ -104,7 +73,6 @@ CUSTOMER = {
     "воспитанник", "учащийся", "сотрудник", "работник", "пациент", "получатель",
 }
 
-# маркеры начала «хвоста заказчика» (по леммам)
 _CUT_MARKERS: list[tuple[str, ...]] = [
     ("для", "нужда"), ("для", "обеспечение", "нужда"), ("для", "государственный", "нужда"),
     ("в", "целях"), ("в", "цель"), ("по", "адрес"), ("по", "адресу"), ("в", "соответствие"),
@@ -156,10 +124,8 @@ def _find_cut(lemmas: list[str], tokens: list[str]) -> int:
         for mk in _CUT_MARKERS:
             if tuple(lemmas[i:i + len(mk)]) == mk and has_content(i):
                 return i
-        # «для гбоу …», «для спб гбуз …»
         if lemmas[i] == "для" and i + 1 < n and lemmas[i + 1] in CUSTOMER and has_content(i):
             return i
-        # «… в 2025 году», «… на 2025-2026 гг»
         if lemmas[i] in {"в", "на"} and i + 1 < n and _YEAR.match(tokens[i + 1]) and has_content(i):
             return i
     return n
@@ -167,16 +133,7 @@ def _find_cut(lemmas: list[str], tokens: list[str]) -> int:
 
 def extract_keywords(tokens: list[str], lemmas: list[str],
                      tags: list[str] | None = None) -> dict:
-    """Ключевые слова названия закупки.
-
-    Возвращает:
-      keywords         [{"token","lemma","pos","role","idf","weight"}] по убыванию веса
-      subject_span     [start, end) — границы «предмета» в токенах
-      procurement_type "товар" | "работа" | "услуга" | None
-      type_reason      почему выбран тип
-      phrases          устойчивые сочетания предмета: «офисная техника», «ремонт кровли»
-      dropped          что выброшено и почему (для объяснимости)
-    """
+    """Ключевые слова названия закупки."""
     n = len(tokens)
     tags = tags or [pos_tag(t) for t in tokens]
     cut = _find_cut(lemmas, tokens)
@@ -184,7 +141,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
     if cut < n:
         dropped.append({"text": " ".join(tokens[cut:]), "reason": "заказчик/адрес/срок"})
 
-    # тип закупки
     ptype, reason = None, ""
     for i, lem in enumerate(lemmas[:cut]):
         t = PROCEDURE.get(lem)
@@ -200,7 +156,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
             continue
         tok, lem = tokens[i], lemmas[i]
         pos = tags[i]
-        # «5 мл», «24 дюйма», «80 г/м2» -> одна характеристика
         if _PURE_NUM.match(tok):
             nxt = tokens[i + 1] if i + 1 < cut else ""
             if nxt in UNITS or lemmas[i + 1 if i + 1 < cut else i] in UNITS:
@@ -210,7 +165,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
                     items.append({"i": i, "token": f"{tok} {nxt}", "lemma": f"{tok} {unit}",
                                   "pos": "NUM"})
                 continue
-            # голое число без единиц («№ 548», «_1 шт») — шум
             continue
         if _is_stop(lem, tok):
             if lem in PROCEDURE:
@@ -220,7 +174,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
             continue
         items.append({"i": i, "token": tok, "lemma": lem, "pos": pos})
 
-    # роли
     first_noun_seen = False
     prev_action = False
     for it in items:
@@ -259,7 +212,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
     if ptype is None and items:
         ptype, reason = "товар", "нет слов-действий — предмет поставки"
 
-    # сочетания: прил+сущ, сущ+сущ(род. падеж), действие+объект — только соседние
     phrases: list[str] = []
     for a, b in zip(items, items[1:]):
         if b["i"] != a["i"] + 1:
@@ -270,7 +222,6 @@ def extract_keywords(tokens: list[str], lemmas: list[str],
            (a["role"] == "attr" and b["role"] == "purpose"):
             phrases.append(f"{a['lemma']} {b['lemma']}")
 
-    # одна лемма — одна запись (берём максимальный вес)
     best: dict[str, dict] = {}
     for it in items:
         if it["lemma"] not in best or it["weight"] > best[it["lemma"]]["weight"]:
