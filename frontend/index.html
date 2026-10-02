@@ -3,31 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Подбор поставщиков</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<title>НЕВА — навигатор поставщиков</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header class="top">
-  <div class="wrap top-inner">
-    <a class="brand" href="/">
-      <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="34" height="34"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 21l5-5 3 3 6-7" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </span>
-      <span>
-        <span class="brand-title">Подбор поставщиков</span>
-        <span class="brand-sub">АИС ГЗ · Электронный магазин Санкт-Петербурга</span>
-      </span>
-    </a>
-    <div class="health" id="health"></div>
-  </div>
-</header>
-
 <section class="hero">
-  <div class="wrap">
-    <h1>Кто сможет выполнить вашу закупку?</h1>
-    <p class="lead">Опишите закупку — получите рейтинг поставщиков с объяснением, почему подходит каждый, и новые компании, которые ещё не участвовали в торгах.</p>
+  <svg class="cityline" viewBox="0 0 1440 280" preserveAspectRatio="xMidYMax slice" aria-hidden="true" focusable="false">
+    <path d="M0 258h1440v22H0zM80 258v-28h24v-12h26v40zm82 0v-39h11v-24h26v24h12v39zm81 0v-53h18v-19h13v-24h4v-23h4v23h4v24h13v19h17v53zm135 0v-24h16v-20h14v44zm84 0v-34h18v-14h22v48zm97 0v-35h22v-31h11v-24h9v-18h7v-17h4v17h7v18h9v24h11v31h22v35zm170 0v-24h26v-15h18v39zm84 0v-22h22v-16h16v38zm97 0v-21h19v-21h21v42zm90 0v-44h15v-24h10v-21h5v-16h4v16h5v21h10v24h15v44zm139 0v-37h18v-18h27v55zm108 0v-26h28v-12h20v38z"/>
+    <path d="M0 250c185-59 299-60 457 0m-68 0c185-62 328-60 506 0m-99 0c205-58 402-63 644 0" fill="none" stroke="currentColor" stroke-width="3"/>
+    <path d="M0 248h1440M37 248v-24m23 24v-29m23 29v-31m23 31v-33m23 33v-31m23 31v-28m23 28v-24m23 24v-19m23 19v-17m23 17v-13m23 13v-10m23 10v-8m23 8v-8m23 8v-10m23 10v-12m23 12v-16m23 16v-19m23 19v-23m23 23v-26m23 26v-29m23 29v-31m23 31v-33m23 33v-34m23 34v-35m23 35v-34m23 34v-33m23 33v-31m23 31v-29m23 29v-27m23 27v-25m23 25v-23m23 23v-21m23 21v-19m23 19v-17m23 17v-16m23 16v-15m23 15v-14m23 14v-15m23 15v-17m23 17v-19m23 19v-22m23 22v-25m23 25v-28m23 28v-31m23 31v-33m23 33v-34m23 34v-35m23 35v-35m23 35v-34m23 34v-33m23 33v-31m23 31v-29m23 29v-27m23 27v-24m23 24v-21m23 21v-18m23 18v-15m23 15v-12" fill="none" stroke="currentColor" stroke-width="2"/>
+  </svg>
+  <div class="wrap hero-inner">
+    <div class="hero-top">
+      <a class="brand" href="/" aria-label="НЕВА — на главную">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64" focusable="false"><path class="logo-tile" d="M16 2h32a14 14 0 0 1 14 14v32a14 14 0 0 1-14 14H16A14 14 0 0 1 2 48V16A14 14 0 0 1 16 2Z"/><path class="logo-line" d="M10 42c7-5 13-5 20 0s13 5 24-1M12 32h40M18 32V22m28 10V22M18 22c8 8 20 8 28 0M32 22V11"/></svg>
+        </span>
+        <span class="brand-name">НЕВА<span class="brand-sub">Навигатор поставщиков</span></span>
+      </a>
+      <div class="hero-top-right"><div class="health" id="health"></div></div>
+    </div>
+
+    <div class="hero-intro">
+      <div class="hero-copy">
+        <span class="eyebrow">ПОИСК ПО ОПЫТУ И ПРОФИЛЮ КОМПАНИЙ</span>
+        <h1>Найдите поставщика<br>для вашей закупки</h1>
+        <p class="lead">Введите данные закупки — покажем подходящие компании, их опыт и причины рекомендации.</p>
+      </div>
+    </div>
 
     <div class="modes" role="tablist" aria-label="Способ ввода">
       <button type="button" class="mode active" data-mode="card" role="tab">
@@ -55,7 +58,7 @@
         <textarea id="c-items" rows="3" placeholder="Бумага для офисной техники А4; 17.12.14.129&#10;Бумага для офисной техники А3"></textarea>
       </label>
       <div class="extra">
-        <div class="extra-head">Дополнительно <em>чем больше заполнено, тем точнее подбор: с данными закупки победитель попадает в топ-10 в 53% случаев против 43% по одному названию</em></div>
+        <div class="extra-head">Дополнительно <em>заполните известные данные закупки, чтобы уточнить подбор</em></div>
         <div class="extra-grid">
           <label class="fld">
             <span class="fld-label">НМЦ, ₽</span>
@@ -177,7 +180,7 @@
   </section>
 </main>
 
-<footer class="foot"><div class="wrap">Данные: извещения, заявки и спецификации АИС ГЗ / ЭМ Санкт-Петербурга за 2024–2025 · Реестр МСП и ЕГРЮЛ ФНС · РНП (ЕИС). Внешние нейросетевые API не используются.</div></footer>
+<footer class="foot"><div class="wrap"><b>НЕВА</b> · История закупок АИС ГЗ и Электронного магазина Санкт-Петербурга · Дополнительные сведения: реестр МСП, ЕГРЮЛ ФНС и реестр недобросовестных поставщиков</div></footer>
 
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box">
