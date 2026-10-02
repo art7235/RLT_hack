@@ -66,16 +66,24 @@ def build() -> None:
     """)
 
     # --- документы для поиска: предмет лота + уникальные позиции ТРУ ---------
-    step("lot_docs", """
-        CREATE TABLE lot_docs AS
-        SELECT l.lot_id,
-               l.subject,
-               coalesce(string_agg(DISTINCT i.product_name, ' | '), '') AS items,
-               list(DISTINCT i.okpd2_code) FILTER (WHERE i.okpd2_code IS NOT NULL) AS okpd2_codes
-        FROM lots l
-        LEFT JOIN lot_items i USING (lot_id)
-        GROUP BY l.lot_id, l.subject
-    """)
+    # Склейка позиций в текст закупки не умеет сбрасываться на диск, поэтому считаем её порциями
+    # по номеру лота — так сборка проходит и на машине с 4 ГБ памяти.
+    con.execute("CREATE TABLE lot_docs (lot_id BIGINT, subject VARCHAR, items VARCHAR, okpd2_codes VARCHAR[])")
+    batches = 8
+    for b in range(batches):
+        con.execute(f"""
+            INSERT INTO lot_docs
+            WITH d AS (SELECT DISTINCT lot_id, product_name FROM lot_items
+                       WHERE product_name IS NOT NULL AND lot_id % {batches} = {b}),
+                 a AS (SELECT lot_id, string_agg(product_name, ' | ') AS items FROM d GROUP BY lot_id),
+                 k AS (SELECT DISTINCT lot_id, okpd2_code FROM lot_items
+                       WHERE okpd2_code IS NOT NULL AND lot_id % {batches} = {b}),
+                 c AS (SELECT lot_id, list(okpd2_code) AS okpd2_codes FROM k GROUP BY lot_id)
+            SELECT l.lot_id, l.subject, coalesce(a.items, '') AS items, c.okpd2_codes
+            FROM lots l LEFT JOIN a USING (lot_id) LEFT JOIN c USING (lot_id)
+            WHERE l.lot_id % {batches} = {b}
+        """)
+    print(f"[{time.time() - t0:6.1f}s] lot_docs: {con.execute('SELECT count(*) FROM lot_docs').fetchone()[0]:,}")
 
     # --- профиль поставщика -------------------------------------------------
     step("supplier_profile", """
