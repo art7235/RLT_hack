@@ -27,7 +27,8 @@ const TAB_HINT = {
 
 // результаты хранятся отдельно для каждого режима, чтобы вкладки не показывали чужую выдачу
 const FIRST = 3, MORE = 5;  // сначала показываем 3 лучших, кнопка добавляет ещё по 5
-const state = { mode: "card", tab: "dataset", role: "", size: "", visible: FIRST, files: [], data: null, results: { card: null, quick: null, file: null }, batch: null };
+const state = { mode: "card", tab: "dataset", role: "", size: "", visible: FIRST, files: [], data: null, results: { card: null, quick: null, file: null }, batch: null,
+  rerun: { card: null, quick: null, file: null } };  // как повторить поиск текущего режима без слов, убранных пользователем
 
 // ------------------------------------------------------------------ init
 $("#examples").innerHTML = EXAMPLES.map((e) => `<button type="button">${esc(e)}</button>`).join("");
@@ -93,8 +94,9 @@ async function request(btn, doFetch, onOk) {
       try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (_) { /* не JSON */ }
       throw new Error(msg);
     }
+    const data = await r.json();  // большой ответ читается секунды — индикатор убираем только после этого
     $("#state").innerHTML = "";
-    onOk(await r.json());
+    onOk(data);
   } catch (e) {
     $("#state").innerHTML = `<span class="error-box">Не получилось: ${esc(e.message)}</span>`;
   } finally {
@@ -124,10 +126,12 @@ function quickParams() {
   p.set("limit", "40");
   return p;
 }
-async function runQuick() {
+async function runQuick(exclude = []) {
   const p = quickParams();
   if (!p.get("q")) return;
   $("#csv").href = "/api/search.csv?" + p.toString();
+  if (exclude.length) p.set("exclude", exclude.join(","));
+  state.rerun.quick = (ex) => runQuick(ex);
   await request($("#form button[type=submit]"), () => fetch("/api/search?" + p.toString()), showResult);
 }
 $("#form").addEventListener("submit", (ev) => { ev.preventDefault(); runQuick(); });
@@ -161,9 +165,11 @@ $("#card-form").addEventListener("submit", async (ev) => {
     $("#c-text").focus();
     return;
   }
-  await request($("#card-form button[type=submit]"),
-    () => fetch("/api/procurement?limit=40&n_new=15", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  const run = (exclude) => request($("#card-form button[type=submit]"),
+    () => fetch("/api/procurement?limit=40&n_new=15", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, exclude_terms: exclude }) }),
     showResult);
+  state.rerun.card = run;
+  await run([]);
 });
 $("#c-example").addEventListener("click", () => {
   $("#c-text").value = "Поставка бумаги для офисной техники";
@@ -214,26 +220,59 @@ $("#file-form").addEventListener("submit", async (ev) => {
   if (!files.length) { $("#state").innerHTML = `<span class="error-box">Сначала выберите файл с закупками</span>`; return; }
   const fd = new FormData();
   files.forEach((f) => fd.append("file", f));
-  await request($("#file-form button[type=submit]"), () => fetch("/api/batch?limit=25&n_new=5", { method: "POST", body: fd }), renderBatch);
+  // пакет считается десятки секунд — раз в полторы секунды спрашиваем сервер, сколько закупок уже готово
+  const job = Math.random().toString(36).slice(2, 12);
+  let active = true, total = 0;
+  const timer = setInterval(async () => {
+    try {
+      const p = await (await fetch("/api/batch/progress/" + job)).json();
+      if (!active || !(p.total || total)) return;
+      // сервер забывает задание, как только досчитал: дальше идёт только передача результата
+      const ready = !p.total || p.done >= p.total;
+      total = p.total || total;
+      $("#state").innerHTML = `<div class="spinner"></div>${ready ? `Обработано закупок: ${total} из ${total}. Получаем результат…` : `Обработано закупок: ${p.done} из ${total}`}
+        <div class="share batch-progress"><span style="width:${ready ? 100 : Math.round(p.done / total * 100)}%"></span></div>`;
+    } catch (_) { /* опрос прогресса не обязателен */ }
+  }, 1500);
+  try {
+    await request($("#file-form button[type=submit]"), () => fetch("/api/batch?limit=25&n_new=5&job=" + job, { method: "POST", body: fd }), renderBatch);
+  } finally {
+    active = false;
+    clearInterval(timer);
+    if ($(".batch-progress", $("#state"))) $("#state").innerHTML = "";  // индикатор не должен остаться после результата
+  }
 });
 
-function renderBatch(b) {
-  state.batch = b;
-  const rows = b.procedures.map((p, i) => {
-    const r = p.result, hist = r.suppliers || [];
-    const meta = [`${p.input.items.length} поз.`];
-    if (p.input.customer_inn) meta.push("заказчик " + esc(p.input.customer_inn));
-    if (p.input.price) meta.push("НМЦ " + fmtMoney(p.input.price));
-    if (p.input.platform) meta.push(esc(p.input.platform));
-    return `<tr data-i="${i}">
+// ячейка «Поставщики» в таблице пакета: сначала 3 лучших, кнопка в строке добавляет ещё по 5
+function batchSuppliers(hist, n) {
+  if (!hist.length) return "не найдено";
+  const rest = hist.length - Math.min(n, hist.length);
+  return hist.slice(0, n).map((s, k) => `${k + 1}. ${esc(s.name)}`).join("<br>")
+    + (rest > 0 || n > FIRST ? `<div class="row-btns">
+        ${rest > 0 ? `<button type="button" class="row-more">Загрузить ещё ${Math.min(MORE, rest)}</button>` : ""}
+        ${n > FIRST ? `<button type="button" class="row-less">Свернуть</button>` : ""}</div>` : "");
+}
+
+// ячейки одной строки таблицы пакета; n — сколько поставщиков раскрыто
+function batchRow(p, n) {
+  const r = p.result, hist = r.suppliers || [];
+  const meta = [`${p.input.items.length} поз.`];
+  if (p.input.customer_inn) meta.push("заказчик " + esc(p.input.customer_inn));
+  if (p.input.price) meta.push("НМЦ " + fmtMoney(p.input.price));
+  if (p.input.platform) meta.push(esc(p.input.platform));
+  return `
       <td>${esc(p.procedure_id)}${p.input.lot_id && p.input.lot_id !== p.procedure_id ? `<div class="sub2">лот ${esc(p.input.lot_id)}</div>` : ""}</td>
       <td>${esc(p.input.text || p.input.items.slice(0, 2).join("; "))}<div class="sub2">${meta.join(" · ")}</div></td>
       <td>${(r.okpd2 || []).slice(0, 2).map((o) => esc(o.code)).join("<br>") || "—"}</td>
-      <td class="sub2">${hist.slice(0, 3).map((s, k) => `${k + 1}. ${esc(s.name)}`).join("<br>") || "не найдено"}</td>
+      <td class="sub2 batch-sup">${batchSuppliers(hist, n)}</td>
       <td>${hist.length}<span class="sub2"> + ${(r.external || []).length} новых</span>
-        ${r.confidence && r.confidence.level !== "high" ? `<div class="sub2 conf-mark" title="${esc(r.confidence.message)}">${r.confidence.level === "low" ? "нет точных совпадений" : "совпадение неполное"}</div>` : ""}</td>
-    </tr>`;
-  }).join("");
+        ${r.confidence && r.confidence.level !== "high" ? `<div class="sub2 conf-mark" title="${esc(r.confidence.message)}">${r.confidence.level === "low" ? "нет точных совпадений" : "совпадение неполное"}</div>` : ""}</td>`;
+}
+
+function renderBatch(b) {
+  state.batch = b;
+  const shown = b.procedures.map(() => FIRST);  // сколько поставщиков раскрыто в каждой строке
+  const rows = b.procedures.map((p, i) => `<tr data-i="${i}">${batchRow(p, FIRST)}</tr>`).join("");
   const errs = (b.errors || []).length ? `<div class="batch-errors"><b>Замечания по файлу (${b.errors.length})</b><ul>${b.errors.map((e) =>
     `<li>${e.row ? "строка " + e.row + ": " : ""}${e.procedure_id ? "закупка " + esc(e.procedure_id) + " — " : ""}${esc(e.problem)}</li>`).join("")}</ul></div>` : "";
   $("#batch").innerHTML = `
@@ -245,14 +284,34 @@ function renderBatch(b) {
       </div>
     </div>
     ${b.procedures.length ? `<div class="table-scroll"><table class="batch-table">
-      <tr><th>№</th><th>Закупка</th><th>ОКПД2</th><th>Топ-3 поставщика</th><th>Найдено</th></tr>${rows}
+      <tr><th>№</th><th>Закупка</th><th>ОКПД2</th><th>Поставщики</th><th>Найдено</th></tr>${rows}
     </table></div><p class="batch-hint">Нажмите на строку, чтобы увидеть полный рейтинг по закупке.</p>` : `<div class="empty">В файле не нашлось ни одной закупки</div>`}
     ${errs}`;
   $("#batch").classList.remove("hidden");
-  $$("tr[data-i]", $("#batch")).forEach((tr) => tr.addEventListener("click", () => {
+  $$("tr[data-i]", $("#batch")).forEach((tr) => tr.addEventListener("click", (ev) => {
+    const i = Number(tr.dataset.i);
+    const more = ev.target.closest(".row-more"), less = ev.target.closest(".row-less");
+    if (more || less) {  // кнопки раскрывают и сворачивают список в строке, сама строка при этом не выбирается
+      shown[i] = less ? FIRST : shown[i] + MORE;
+      $(".batch-sup", tr).innerHTML = batchSuppliers(b.procedures[i].result.suppliers || [], shown[i]);
+      return;
+    }
     $$("tr", $("#batch")).forEach((x) => x.classList.remove("sel"));
     tr.classList.add("sel");
-    showResult(b.procedures[Number(tr.dataset.i)].result, tr.dataset.auto !== "1");
+    // повторный подбор этой закупки без слов, которые убрал пользователь; результат заменяет старый и в Excel
+    state.rerun.file = async (exclude, btn) => {
+      const p = b.procedures[i];
+      await request(btn, () => fetch(`/api/procurement?limit=25&n_new=5&batch_id=${b.batch_id}&index=${i}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...p.input, exclude_terms: exclude }),
+      }), (data) => {
+        p.result = data;
+        shown[i] = FIRST;
+        tr.innerHTML = batchRow(p, FIRST);
+        showResult(data);
+      });
+      $("#batch").classList.remove("hidden");
+    };
+    showResult(b.procedures[i].result, tr.dataset.auto !== "1");
     tr.dataset.auto = "";
   }));
   const first = $("tr[data-i]", $("#batch"));
@@ -286,7 +345,14 @@ function renderUnderstanding() {
   const d = state.data, q = d.query, pr = q.procurement;
   let html = `<p class="side-title">Как система поняла закупку</p>`;
   if (q.was_corrected) html += `<div class="corr">Исправили опечатки: <b>${esc(q.corrected)}</b></div>`;
-  html += `<h3>Ключевые слова</h3><div class="terms">${q.terms.slice(0, 14).map((t) => `<span class="term">${esc(t)}</span>`).join("") || "—"}</div>`;
+  // слово можно убрать из поиска нажатием; убранные показаны зачёркнутыми, повторное нажатие возвращает
+  const excluded = q.excluded || [], canRerun = !!state.rerun[state.mode];
+  const chip = (t, off) => canRerun
+    ? `<button type="button" class="term${off ? " off" : ""}" data-term="${esc(t)}" title="${off ? "Вернуть слово в поиск" : "Убрать слово из поиска"}">${esc(t)}</button>`
+    : `<span class="term">${esc(t)}</span>`;
+  html += `<h3>Ключевые слова</h3><div class="terms">${q.terms.slice(0, 14).map((t) => chip(t, false)).join("")}${excluded.map((t) => chip(t, true)).join("") || (q.terms.length ? "" : "—")}</div>`;
+  if (canRerun) html += `<p class="terms-hint">Слово не относится к предмету закупки? Нажмите на него, чтобы убрать, и запустите поиск заново.</p>
+    <button type="button" class="btn btn-primary btn-sm hidden" id="re-search">Искать заново</button>`;
   if (q.intent) html += `<h3>Тип закупки</h3><span class="intent">${INTENT[q.intent]}</span>`;
   if (pr && (pr.items || pr.customer_inn || pr.price || pr.platform || pr.is_smp)) {
     html += `<h3>Данные закупки</h3><div class="proc-data">
@@ -311,6 +377,17 @@ function renderUnderstanding() {
   }
   html += `<div class="meta">Подбор занял ${d.took_ms} мс</div>`;
   $("#understanding").innerHTML = html;
+  const btn = $("#re-search");
+  if (btn) {
+    const off = () => $$(".term.off", $("#understanding")).map((el) => el.dataset.term);
+    $$("button.term", $("#understanding")).forEach((el) => el.addEventListener("click", () => {
+      el.classList.toggle("off");
+      el.title = el.classList.contains("off") ? "Вернуть слово в поиск" : "Убрать слово из поиска";
+      // кнопка появляется, только если набор убранных слов отличается от того, с которым искали
+      btn.classList.toggle("hidden", off().slice().sort().join(",") === excluded.slice().sort().join(","));
+    }));
+    btn.addEventListener("click", () => state.rerun[state.mode](off(), btn));
+  }
   $("#cnt-dataset").textContent = d.suppliers.length;
   $("#cnt-external").textContent = (d.external || []).length;
 }
